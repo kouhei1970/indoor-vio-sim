@@ -59,6 +59,9 @@ try {
       // 着地させて、描画モデルの最下点が床とどれだけずれるかを測る。
       // 当たり判定 (球の集まり) と描画モデルの定義がずれると、機体が床に
       // めり込んだり浮いたりする。ここで見ておかないと静かに壊れる。
+      // 実機 CAD (STL) は非同期に届くので、必ず待ってから測る
+      // (待たないと STL 抜きの仮の形を測ることになり、不具合を見逃す)。
+      await a.renderer.droneBuilder.meshReady;
       a.resetSim();
       a.sim.setMode('rate');
       a.sim.setCommand({ roll: 0, pitch: 0, yaw: 0, throttle: 0 });

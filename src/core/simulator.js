@@ -136,6 +136,9 @@ export class Simulator {
   setModelBottom(y) {
     if (!Number.isFinite(y)) return;
     this.modelBottom = y;
+    // 素の形状から作り直してから合わせる。STL の読み込み完了などで
+    // 二度呼ばれても、前回の調整が積み重ならないようにするため。
+    this.shape = buildCollisionShape(this.vehicle, this.massProps);
     fitShapeToModel(this.shape, y);
   }
 

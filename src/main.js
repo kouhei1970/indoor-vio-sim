@@ -91,7 +91,10 @@ class App {
     // 描画側のモデルを作り直す
     this.renderer.buildDrone(this.vehicle, this.sim.massProps.com);
     // 当たり判定の接地面を、実際に描かれるモデルの最下点へ合わせる
-    // (球の集まりで近似しているため、そのままだと床にめり込む / 浮く)
+    // (球の集まりで近似しているため、そのままだと床にめり込む / 浮く)。
+    // 実機 CAD (STL) は非同期に届くので、届いた時点でもう一度合わせ直す
+    // (onBoundsChanged は droneBuilder が呼ぶ)。
+    this.renderer.droneBuilder.onBoundsChanged = (b) => this.sim.setModelBottom(b.min.y);
     this.sim.setModelBottom(this.renderer.droneBuilder.bounds?.min.y);
     this.renderer.clearTrail();
     this.sim.controller.targetPos = { ...this.sim.state.p };

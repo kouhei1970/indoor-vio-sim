@@ -156,6 +156,8 @@ export class DroneBuilder {
   build(cfg, com = { x: 0, y: 0, z: 0 }) {
     this.dispose();
     this.cfg = cfg;
+    // STL を使わない機体は、この build() が終わった時点で完成している
+    this.meshReady = Promise.resolve();
     const rotors = resolveLayout(cfg.frame);
     const p = cfg.parts;
 
@@ -292,9 +294,9 @@ export class DroneBuilder {
 
     const token = {};
     this.meshToken = token;
-    for (const part of meshCfg.parts) {
+    const pending = meshCfg.parts.map((part) => {
       const url = `${meshCfg.baseUrl ?? ''}${part.file}`;
-      loadSTL(url).then((geo) => {
+      return loadSTL(url).then((geo) => {
         // 読み込み中に機体が作り直された場合は捨てる
         if (this.meshToken !== token || !geo) return;
         const mesh = new THREE.Mesh(geo, makeMaterial(part.material));
@@ -304,8 +306,18 @@ export class DroneBuilder {
         mesh.receiveShadow = true;
         mesh.layers.mask = group.layers.mask;
         group.add(mesh);
-      });
-    }
+      }).catch(() => {});
+    });
+
+    // STL は非同期に届くので、build() の最後で測った外形には入っていない。
+    // 全部そろってから測り直し、当たり判定の接地面を更新してもらう。
+    // これを怠ると、実機 CAD を使う機体 (StampFly) だけ、当たり判定が
+    // パラメトリックな仮の形のまま決まってしまい、床に 10mm めり込む。
+    this.meshReady = Promise.all(pending).then(() => {
+      if (this.meshToken !== token) return;
+      this.measureBounds();
+      this.onBoundsChanged?.(this.bounds);
+    });
   }
 
   buildArms(parent, p, rotors, frame) {
