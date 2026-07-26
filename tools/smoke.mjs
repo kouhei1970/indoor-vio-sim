@@ -46,6 +46,7 @@ try {
   const report = await page.evaluate(async () => {
     const a = window.app;
     a.headless = true;
+    const THREE = await import('/vendor/three/three.module.js');
     const veh = await import('/src/config/vehicle.js');
     const rooms = await import('/src/config/rooms.js');
     const { LAYOUTS } = await import('/src/core/airframe.js');
@@ -125,6 +126,18 @@ try {
       // 建物は描画が重いので物理だけ進め、描画の確認は 1 フレームだけにする
       for (let i = 0; i < 300; i++) a.sim.advance(1 / 150);
       a.headlessStep(1 / 60);
+      // 見えている床の上面と、当たり判定の床の上面 (= 階の elevation) が
+      // 一致しているか。ずれていると機体が床にめり込む / 浮いて見える。
+      const B = a.renderer.buildingBuilder;
+      let floorGap = 0;
+      const slabs = [];
+      B.group.traverse((o) => { if (o.isMesh && /^slab-/.test(o.name || '')) slabs.push(o); });
+      slabs.forEach((o, i) => {
+        const box = new THREE.Box3().setFromObject(o);
+        const elevation = B.floorInfo[i] ? B.floorInfo[i].elevation : 0;
+        floorGap = Math.max(floorGap, Math.abs(box.max.y - elevation));
+      });
+
       out.buildings.push({
         key,
         floors: preset.floors.length,
@@ -134,6 +147,7 @@ try {
         spawn: a.renderer.spawnPoint(),
         y: a.sim.state.p.y,
         crashed: a.sim.crashed,
+        floorGap,
       });
     }
     a.env.mode = 'room';
@@ -174,6 +188,9 @@ try {
     report.buildings.map((b) => `${b.key}:${b.meshes}`).join(' '));
   check(report.buildings.every((b) => b.colliders > 50), '建物の当たり判定が登録される',
     report.buildings.map((b) => `${b.key}:${b.colliders}`).join(' '));
+  // 見えている床の上面と当たり判定の床がずれると、機体が床にめり込んで見える
+  check(report.buildings.every((b) => b.floorGap < 0.002), '床の見た目と当たり判定が一致する',
+    report.buildings.map((b) => `${b.key}:${(b.floorGap * 1000).toFixed(1)}mm`).join(' '));
   check(report.buildings.every((b) => b.routes.length > 0 && b.routes.every((r) => r.points > 4)),
     '建物ルートが生成される',
     report.buildings.map((b) => `${b.key}:${b.routes.map((r) => r.name).join(',')}`).join(' '));

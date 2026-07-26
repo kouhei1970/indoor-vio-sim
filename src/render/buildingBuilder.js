@@ -260,9 +260,17 @@ export class BuildingBuilder {
     const voids = floor.voids || [];
 
     // --- 床スラブ (吹抜の穴あき) ---
+    //
+    // elevation は「床の上面」の高さ。階高・階段・吹抜・飛行ルートは
+    // すべてこの面を基準にしているので、スラブは elevation から下へ厚み分
+    // 伸ばす。ExtrudeGeometry は +Z へ押し出し、rotateX(-90°) でそれが +Y
+    // (上) へ向くので、そのままだと床が elevation より上に立ち上がって
+    // しまう。当たり判定は elevation を上面として登録しているため、
+    // 見えている床と物理の床が厚み分 (22cm) ずれて機体がめり込んで見えた。
     const slabGeo = new THREE.ExtrudeGeometry(makeShape(outline, voids),
       { depth: slabT, bevelEnabled: false });
     slabGeo.rotateX(-PI / 2);           // XZ 平面へ
+    slabGeo.translate(0, -slabT, 0);    // 上面を elevation に合わせる
     const slab = new THREE.Mesh(slabGeo, mats.floor);
     slab.position.y = elevation;
     slab.receiveShadow = true;
@@ -290,8 +298,12 @@ export class BuildingBuilder {
     const ceilVoids = stacked ? (above.voids || []) : [];
     if (!floor.noCeiling) {
       const ceilShape = makeShape(outline, ceilVoids);
-      const ceilGeo = new THREE.ExtrudeGeometry(ceilShape, { depth: 0.06, bevelEnabled: false });
+      const ceilT = 0.06;
+      const ceilGeo = new THREE.ExtrudeGeometry(ceilShape, { depth: ceilT, bevelEnabled: false });
       ceilGeo.rotateX(-PI / 2);
+      // 床スラブと同じ理由で下へ吊る。上へ伸ばすと、真上の階の床の上に
+      // 天井が 6cm 突き出し、上階に着地した機体が浮いてしまう。
+      ceilGeo.translate(0, -ceilT, 0);
       const ceil = new THREE.Mesh(ceilGeo, isTop ? mats.exterior : mats.ceiling);
       ceil.name = `ceiling-${floor.name}`;
       ceil.position.y = elevation + height;
@@ -299,8 +311,9 @@ export class BuildingBuilder {
       if (floorIndex != null) this.floorGroup(floorIndex).add(ceil);
       else this.group.add(ceil);
       for (const cell of rectMinusHoles(outline, ceilVoids)) {
-        this.addBox((cell.x0 + cell.x1) / 2, elevation + height + 0.03, (cell.z0 + cell.z1) / 2,
-          (cell.x1 - cell.x0) / 2, 0.03, (cell.z1 - cell.z0) / 2, 0, 'ceiling');
+        // 天井の下面 (= 見えている面) を elevation + height に合わせる
+        this.addBox((cell.x0 + cell.x1) / 2, elevation + height - ceilT / 2, (cell.z0 + cell.z1) / 2,
+          (cell.x1 - cell.x0) / 2, ceilT / 2, (cell.z1 - cell.z0) / 2, 0, 'ceiling');
       }
     }
 
