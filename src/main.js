@@ -162,7 +162,18 @@ class App {
   setFlightMode(mode) {
     this.state.flightMode = mode;
     this.sim.setMode(mode);
-    if (mode === 'auto') this.sim.time = 0;
+    if (mode === 'auto') {
+      this.sim.time = 0;
+      // 一周がバッテリーの持ち時間を超えていないか。超えていると途中で
+      // 出力が足りなくなって落ちるので、先に知らせる
+      // (StampFly は 35g・推力重量比 1.5 でホバリング 2 分ほど)。
+      const lap = this.sim.trajectory.duration;
+      const hover = (this.sim.perf.hoverMinutes ?? 0) * 60;
+      if (hover > 0 && lap > hover * 0.8) {
+        this.notify(`一周 ${lap.toFixed(0)} 秒に対しホバリング時間 ${hover.toFixed(0)} 秒 — `
+          + '途中でバッテリーが切れます (速度を上げるか、機体・電池を変えてください)');
+      }
+    }
   }
 
   cycleFlightMode() {
@@ -496,6 +507,17 @@ class App {
       const t = this.sim.controller.targetPos;
       this.renderer.targetMarker.position.set(t.x, t.y, t.z);
       this.renderer.targetMarker.visible = this.state.showPath;
+    }
+
+    // --- シミュレータからの通知 ---
+    // バッテリー切れは「制御の不具合で落ちた」ように見えるので、必ず知らせる。
+    for (const ev of this.sim.events.splice(0)) {
+      if (ev.type === 'lowBattery') this.notify('バッテリー残量 20% — まもなく高度を保てなくなります');
+      else if (ev.type === 'emptyBattery') this.notify('バッテリー切れ — 出力が足りず降下します');
+      else if (ev.type === 'crash') {
+        this.notify(ev.inverted ? '墜落 (裏返り) — R でリセット'
+          : `墜落 (${(ev.speed ?? 0).toFixed(1)} m/s で衝突) — R でリセット`);
+      }
     }
 
     // --- データ記録 ---

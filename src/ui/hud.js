@@ -74,8 +74,13 @@ export class Hud {
       ['角速度', `${f(s.omega.x, 2)}, ${f(s.omega.y, 2)}, ${f(s.omega.z, 2)} rad/s`],
       ['風速', `${f(Math.hypot(s.wind.x, s.wind.y, s.wind.z), 2)} m/s`],
       ['接触', s.contact > 0 ? `${s.contact} 点` : 'なし', s.contact > 0 ? 'warn' : ''],
-      ['状態', s.crashed ? '墜落' : (s.saturated ? '出力飽和' : '正常'),
-        s.crashed ? 'bad' : (s.saturated ? 'warn' : 'good')],
+      // 電圧が下がるとモータが飽和して高度を保てなくなる。原因が分かるように
+      // 「バッテリー切れ」を先に出す (出力飽和より具体的なので優先)。
+      ['状態', s.crashed ? '墜落'
+        : (s.battery && s.battery.soc <= 0.05 ? 'バッテリー切れ'
+          : (s.saturated ? '出力飽和' : '正常')),
+      s.crashed || (s.battery && s.battery.soc <= 0.05) ? 'bad'
+        : (s.saturated ? 'warn' : 'good')],
       ['描画', `${f(info.fps, 0)} fps${info.quality || ''}`,
         info.fps < 25 ? 'warn' : ''],
     ]);

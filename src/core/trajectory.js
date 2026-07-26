@@ -129,8 +129,16 @@ export class Trajectory {
     const ds = (i) => vlen(vsub(pts[i + 1], pts[i]));
 
     // 1) 曲率による上限 (Menger の曲率: 3 点を通る円の半径の逆数)
-    for (let i = 1; i + 1 < n; i++) {
-      const a = pts[i - 1], b = pts[i], d = pts[i + 1];
+    //
+    // 周回では閉じ目 (終点 = 始点) も「角」になりうるので、そこだけ曲率を
+    // 見ないと、一周の継ぎ目で減速せずに突っ込むことになる。
+    // 終点は始点と同じ点なので、隣は n-2 と 1 を使う。
+    const prevI = (i) => (c.loop && i === 0 ? n - 2 : Math.max(0, i - 1));
+    const nextI = (i) => (c.loop && i === n - 1 ? 1 : Math.min(n - 1, i + 1));
+    const from = c.loop ? 0 : 1;
+    const to = c.loop ? n : n - 1;
+    for (let i = from; i < to; i++) {
+      const a = pts[prevI(i)], b = pts[i], d = pts[nextI(i)];
       const ab = vlen(vsub(b, a)), bc = vlen(vsub(d, b)), ac = vlen(vsub(d, a));
       if (ab < 1e-6 || bc < 1e-6 || ac < 1e-6) continue;
       // 三角形の面積 (外積の大きさ / 2)
@@ -140,6 +148,11 @@ export class Trajectory {
       const area2 = Math.hypot(cx, cy, cz);          // = 2 x 面積
       const kappa = area2 / (ab * bc * ac);          // 曲率 = 4S/(abc) = 2*area2/(2abc)
       if (kappa > 1e-9) v[i] = Math.min(v[i], Math.sqrt(aLat / kappa));
+    }
+    // 周回では閉じ目の両端を揃える (同じ点なので同じ速度でなければならない)
+    if (c.loop && n > 1) {
+      const vJoin = Math.min(v[0], v[n - 1]);
+      v[0] = vJoin; v[n - 1] = vJoin;
     }
 
     // 端点。折り返し (loop = false) では停止して向きを変える
@@ -197,10 +210,15 @@ export class Trajectory {
 
     // 1) 各点の「向きたい方位」を連続化して並べる。
     //    ±π をまたぐ跳びを取り除いておかないと、平滑化が壊れる。
+    //    周回では閉じ目 (終点 = 始点) の隣を回り込んで取る。そうしないと
+    //    継ぎ目が「角」として扱われず、一周した瞬間に目標方位が跳ぶ
+    //    (実測で 89.6° の跳び。制御が振られてロール/ピッチが発散した)。
+    const prevI = (i) => (c.loop && i === 0 ? n - 2 : Math.max(0, i - 1));
+    const nextI = (i) => (c.loop && i === n - 1 ? 1 : Math.min(n - 1, i + 1));
     const want = new Array(n);
     let prev = null;
     for (let i = 0; i < n; i++) {
-      const a = pts[Math.max(0, i - 1)], b = pts[Math.min(n - 1, i + 1)];
+      const a = pts[prevI(i)], b = pts[nextI(i)];
       const dx = b.x - a.x, dz = b.z - a.z;
       let y = (Math.abs(dx) < 1e-9 && Math.abs(dz) < 1e-9)
         ? (prev ?? c.yaw) : Math.atan2(-dx, -dz);
@@ -213,6 +231,10 @@ export class Trajectory {
     //    前向き/後ろ向きの速度制限と違い、方位は「行き過ぎて戻る」と機体が
     //    振られるので、左右対称にならす。対称なので角の手前から向き始め、
     //    角を過ぎてから向き終わる (人が操縦するときと同じ動き)。
+    //
+    //    周回では端を固定せず、一周ぶんの回転量 (turn) を足し引きしながら
+    //    円環として平滑化する。こうすると turn が保たれるので、
+    //    一周後の方位は元の方位と 2π の差 = 同じ向きになる。
     const yaw = want.slice();
     const dt = (i) => Math.max(1e-3, this.times[i + 1] - this.times[i]);
     const maxSlope = () => {
@@ -220,10 +242,20 @@ export class Trajectory {
       for (let i = 0; i + 1 < n; i++) m = Math.max(m, Math.abs(yaw[i + 1] - yaw[i]) / dt(i));
       return m;
     };
+    const turn = yaw[n - 1] - yaw[0];
+    const at = (i) => {
+      if (i < 0) return yaw[i + (n - 1)] - turn;
+      if (i > n - 1) return yaw[i - (n - 1)] + turn;
+      return yaw[i];
+    };
     const tmp = new Array(n);
     for (let pass = 0; pass < 400 && maxSlope() > maxRate; pass++) {
-      tmp[0] = yaw[0]; tmp[n - 1] = yaw[n - 1];
-      for (let i = 1; i + 1 < n; i++) tmp[i] = 0.25 * yaw[i - 1] + 0.5 * yaw[i] + 0.25 * yaw[i + 1];
+      if (c.loop) {
+        for (let i = 0; i < n; i++) tmp[i] = 0.25 * at(i - 1) + 0.5 * at(i) + 0.25 * at(i + 1);
+      } else {
+        tmp[0] = yaw[0]; tmp[n - 1] = yaw[n - 1];
+        for (let i = 1; i + 1 < n; i++) tmp[i] = 0.25 * yaw[i - 1] + 0.5 * yaw[i] + 0.25 * yaw[i + 1];
+      }
       for (let i = 0; i < n; i++) yaw[i] = tmp[i];
     }
     this.yaws = yaw;

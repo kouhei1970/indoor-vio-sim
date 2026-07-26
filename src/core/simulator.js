@@ -103,6 +103,8 @@ export class Simulator {
     this.accelWorld = v3(0, 0, 0);
     this.events.length = 0;
     this.crashed = false;
+    this.warnedLowBattery = false;
+    this.warnedEmptyBattery = false;
     this.contactInfo = { contactCount: 0, maxDepth: 0 };
     this.lastWind = v3(0, 0, 0);
     this.armed = true;
@@ -290,6 +292,22 @@ export class Simulator {
     // --- センサ ---
     this.sensors.update(dt, this.time, this.state, this.accelWorld, this.world,
       this.sim.textureQuality ?? 1);
+
+    // --- バッテリー ---
+    //
+    // 電圧が下がるとモータが飽和し、やがて高度を保てなくなって落ちる。
+    // 実機の挙動としては正しいが、何も知らせないと「制御の不具合で落ちた」
+    // ように見えるので、節目でイベントを出す。
+    // (StampFly は 35g・推力重量比 1.5 で、ホバリングで 2 分ほどしか保たない)
+    const soc = this.motors.soc;
+    if (soc <= 0.2 && !this.warnedLowBattery) {
+      this.warnedLowBattery = true;
+      this.events.push({ t: this.time, type: 'lowBattery', soc });
+    }
+    if (soc <= 0.05 && !this.warnedEmptyBattery) {
+      this.warnedEmptyBattery = true;
+      this.events.push({ t: this.time, type: 'emptyBattery', soc });
+    }
 
     // --- 破損判定 ---
     //
