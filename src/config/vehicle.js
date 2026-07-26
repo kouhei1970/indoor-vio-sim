@@ -209,6 +209,97 @@ export function clone(v) {
 /* ------------------------------------------------------------------ */
 
 export const PRESETS = {
+  /**
+   * M5Stack StampFly.
+   *
+   * 公表されている実機の仕様に合わせている:
+   *   全備重量 36.8 g / 外形 82 x 82 x 30 mm
+   *   モータ   716-17600KV コアレス (φ7 x 16 mm, 2.7 g/個)
+   *   プロペラ 0.05 g/枚
+   *   バッテリ 1S 300 mAh HV (30C)
+   *   MCU      M5StampS3 (ESP32-S3)
+   *   センサ   BMI270 / BMP280 / BMM150 / VL53L3CX / PMW3901 / INA3221
+   *   プロペラガードは別売りオプションなので既定では付けていない
+   *
+   * プロペラ直径は公表値が見つからなかったため、外形 82 mm 角に 4 発を
+   * 干渉なく収める幾何条件から 40 mm とした
+   * (アーム長 30 mm → 隣接ロータ間 42 mm > プロペラ径 40 mm)。
+   * 実機の値が分かれば parts.prop.diameter と frame.armLength を直せばよい。
+   *
+   * 実機にカメラは無い。ここでは自己位置推定の研究用に
+   * 0.9 g の小型カメラを機首上部に載せた構成にしている
+   * (「カメラ (機体側)」→「有効」を外せば実機と同じ 36.8 g になる)。
+   */
+  stampfly: {
+    name: 'StampFly (M5Stack)',
+    description: '36.8g・82mm 角の超小型機。716 コアレスモータ + 1S 300mAh。'
+      + '実機のセンサ構成 (IMU/気圧/ToF/オプティカルフロー/磁気) と同じ組み合わせで飛ばせる。'
+      + 'カメラは実機には無いので研究用の追加分 (0.9g)。プロペラガードは別売りのため既定では無し。',
+    totalMass: 0.0377,
+    frame: { layout: 'quad-x', armLength: 0.030, motorHeight: 0.005 },
+    parts: {
+      body: {
+        // 基板そのものがフレーム。中央に M5StampS3 が載る
+        shape: 'plate', size: { x: 0.036, y: 0.005, z: 0.036 }, mass: 0.0125,
+        material: mat('#14161a', 0.15, 0.42, { clearcoat: 0.35 }),
+        accent: true,
+        accentMaterial: mat('#ff7a1a', 0.15, 0.45),   // M5Stack のブランドカラー
+      },
+      arm: {
+        shape: 'flat', thickness: 0.0022, width: 0.010, mass: 0.0008,
+        material: mat('#14161a', 0.15, 0.45),
+      },
+      motor: {
+        // 716 コアレス: φ7 x 16 mm, 2.7 g
+        shape: 'coreless', diameter: 0.007, height: 0.016, mass: 0.0027,
+        material: mat('#20232a', 0.35, 0.45),
+        bellMaterial: mat('#b9bdc4', 0.7, 0.3),
+      },
+      prop: {
+        shape: '2blade', diameter: 0.040, pitch: 0.019, bladeWidth: 0.0065, mass: 0.00005,
+        ct: 0.10, cq: 0.011,
+        material: mat('#2a2e35', 0.05, 0.55, { opacity: 0.9, transparent: true }),
+        tipMaterial: mat('#ff7a1a', 0.05, 0.45),
+        tipMarker: true,
+      },
+      guard: {
+        // 別売りオプション。有効にすると屋内でぶつけても安心な構成になる
+        enabled: false, shape: 'ring', radiusScale: 1.12, thickness: 0.0025,
+        mass: 0.0012, material: mat('#3a3f47', 0.05, 0.6),
+      },
+      landingGear: {
+        enabled: true, shape: 'leg', height: 0.008, spread: 0.018, count: 4,
+        thickness: 0.0018, mass: 0.0006, material: mat('#26292f', 0.05, 0.7),
+      },
+      battery: {
+        // 1S 300 mAh HV (PH2.0)
+        enabled: true, size: { x: 0.019, y: 0.007, z: 0.030 },
+        offset: { x: 0, y: -0.008, z: 0.004 }, mass: 0.0075,
+        material: mat('#101318', 0.05, 0.4), labelMaterial: mat('#ff7a1a', 0, 0.55),
+      },
+      camera: {
+        enabled: true, shape: 'box', size: 0.008, offset: { x: 0, y: 0.006, z: -0.017 },
+        tilt: 0, mass: 0.0009,
+        material: mat('#0d0f12', 0.25, 0.4), lensMaterial: mat('#0a2540', 0.9, 0.08),
+      },
+      leds: { enabled: true, frontColor: '#2f9bff', rearColor: '#ff2d2d', intensity: 3, blink: true, blinkHz: 2.5 },
+      misc: { mass: 0.002, offset: { x: 0, y: 0.004, z: 0 } },   // StampS3・各センサ・コネクタ
+    },
+    power: {
+      cells: 1, voltage: 3.8, kv: 17600, capacityMah: 300,
+      internalResistance: 0.12, motorEfficiency: 0.85,
+      // ブラシ (コアレス) モータ + FET ドライブは効率が低い。
+      // 0.40 にするとホバリング時間の推定が実機の公称 (約 4 分) と一致する。
+      systemEfficiency: 0.40,
+      avionicsPower: 0.6, tauUp: 0.018, tauDown: 0.03,
+      motorVariation: 0.03, rotorInertia: 3e-8,
+    },
+    aero: { areaX: 0.0015, areaY: 0.0024, areaZ: 0.0015, kh: 1.5e-6 },
+    controller: {
+      maxSpeedXY: 1.2, maxClimbRate: 1.0, maxTilt: 28 * Math.PI / 180,
+    },
+  },
+
   'toy-90mm': {
     name: 'トイドローン 90mm (ガード付き)',
     description: 'Tello クラス。87g・プロペラガード付きで屋内飛行の定番。カメラは前方固定。',

@@ -121,10 +121,11 @@ export class SceneRenderer {
     this.trailLine.frustumCulled = false;
     this.overlay.add(this.trailLine);
 
-    // 目標位置マーカー
+    // 目標位置マーカー (大きさは機体の寸法に合わせて buildDrone で調整する)
     this.targetMarker = new THREE.Mesh(
-      new THREE.SphereGeometry(0.05, 12, 8),
-      new THREE.MeshBasicMaterial({ color: 0x4da3ff, transparent: true, opacity: 0.6 }));
+      new THREE.SphereGeometry(1, 12, 8),
+      new THREE.MeshBasicMaterial({ color: 0x4da3ff, transparent: true, opacity: 0.45 }));
+    this.targetMarker.scale.setScalar(0.03);
     this.overlay.add(this.targetMarker);
 
     // PiP 表示用
@@ -192,6 +193,9 @@ export class SceneRenderer {
   buildDrone(vehicle, com) {
     this.droneBuilder.build(vehicle, com);
     this.applySelfVisibility();
+    // 目標位置マーカーが機体より大きく見えないよう、機体寸法に比例させる
+    const r = Math.min(Math.max(vehicle.frame.armLength * 0.22, 0.006), 0.07);
+    this.targetMarker.scale.setScalar(r);
     // カメラマウントの位置が変わるのでセンサを付け直す
     if (this.sensor.camera.parent !== this.droneBuilder.cameraMount) {
       this.droneBuilder.cameraMount.add(this.sensor.camera);

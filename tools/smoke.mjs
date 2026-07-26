@@ -108,7 +108,7 @@ try {
 
   const zeroMesh = [...report.presets, ...report.shapes, ...report.layouts, ...report.rooms]
     .filter((r) => r.meshes === 0);
-  check(report.presets.length === 8, '機体プリセット', `${report.presets.length} 種`);
+  check(report.presets.length === 9, '機体プリセット', `${report.presets.length} 種`);
   check(report.shapes.length >= 35, 'パーツ形状', `${report.shapes.length} 通り`);
   check(report.layouts.length === 9, 'ロータ配置', `${report.layouts.length} 種`);
   check(report.rooms.length === 7, '部屋プリセット', `${report.rooms.length} 種`);
