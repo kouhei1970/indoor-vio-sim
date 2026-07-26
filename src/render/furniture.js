@@ -48,9 +48,16 @@ export const FURNITURE_KINDS = [
   'pillar', 'plant', 'sofa', 'table', 'bench', 'machine',
 ];
 
+/** 上に物を置ける家具 (天板の高さを surface で返す) */
+export const TABLETOP_KINDS = ['desk', 'table', 'cabinet', 'bench'];
+/** 机などの上に置く家具 (床に直接置くと浮いて見える) */
+export const ON_TABLE_KINDS = ['monitor'];
+
 export function makeFurniture(kind, rng) {
   const g = new THREE.Group();
   const colliders = [];
+  // 上に物を置ける家具は天板の高さを返す (null = 置けない)
+  let surface = null;
   const woodTex = getTexture('wood', { color: '#8a6440', detail: 0.8, seed: 9 }, { x: 2, y: 2 });
   const wood = shared('wood', { map: woodTex.map, normalMap: woodTex.normalMap, roughness: 0.45 });
   const metal = shared('metal', { color: 0x8a9099, roughness: 0.35, metalness: 0.85 });
@@ -82,6 +89,7 @@ export function makeFurniture(kind, rng) {
         box(0.05, h, 0.05, metal, sx * (w / 2 - 0.06), h / 2, sz * (d / 2 - 0.06));
       }
       addCollider(w, h + 0.04, d);
+      surface = h + 0.04;
       break;
     }
     case 'chair': {
@@ -119,17 +127,20 @@ export function makeFurniture(kind, rng) {
         box(w * 0.8, 0.02, 0.01, dark, 0, h * (0.25 + i * 0.25), d / 2 + 0.005);
       }
       addCollider(w, h, d);
+      surface = h;
       break;
     }
     case 'monitor': {
-      box(0.5, 0.32, 0.03, dark, 0, 1.0, 0);
+      // 原点は台座の底。机やキャビネットの天板の高さに置いて使う
+      // (床に直接置くと宙に浮いて見えるので、配置側が surface を見て載せる)。
+      box(0.24, 0.02, 0.16, metal, 0, 0.01, 0);        // 台座
+      cyl(0.03, 0.22, metal, 0, 0.13, 0);              // 支柱
+      box(0.5, 0.32, 0.03, dark, 0, 0.40, 0);          // 筐体
       box(0.46, 0.28, 0.005,
         shared('screen', { color: 0x0a1520, emissive: 0x1b3a5c, emissiveIntensity: 0.8, roughness: 0.15 }),
-        0, 1.0, 0.02);
-      cyl(0.03, 0.22, metal, 0, 0.85, 0);
-      box(0.24, 0.02, 0.16, metal, 0, 0.74, 0);
-      box(0.6, 0.72, 0.5, new THREE.MeshStandardMaterial({ visible: false }), 0, 0.36, 0);
-      addCollider(0.6, 1.2, 0.5);
+        0, 0.40, 0.02);                                // 画面
+      addCollider(0.5, 0.56, 0.2);
+      surface = null;
       break;
     }
     case 'box': case 'crate': {
@@ -184,6 +195,7 @@ export function makeFurniture(kind, rng) {
       cyl(0.05, 0.45, metal, 0, 0.22, 0);
       cyl(r * 0.6, 0.02, metal, 0, 0.01, 0);
       addCollider(r * 2, 0.5, r * 2);
+      surface = 0.47;
       break;
     }
     case 'bench': {
@@ -191,6 +203,7 @@ export function makeFurniture(kind, rng) {
       box(w, 0.06, 0.35, wood, 0, 0.45, 0);
       for (const sx of [-1, 1]) box(0.06, 0.45, 0.3, metal, sx * (w / 2 - 0.1), 0.22, 0);
       addCollider(w, 0.5, 0.35);
+      surface = 0.51;
       break;
     }
     case 'machine': {
@@ -206,5 +219,5 @@ export function makeFurniture(kind, rng) {
     default:
       return null;
   }
-  return { group: g, colliders };
+  return { group: g, colliders, surface };
 }

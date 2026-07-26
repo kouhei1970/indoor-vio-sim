@@ -32,6 +32,22 @@ export class Trajectory {
   setRoom(bounds) { this.bounds = bounds; this.rebuild(); }
 
   /**
+   * 障害物 (家具・設備) を教える。軌道がこれらを通らないように持ち上げる。
+   *
+   * 壁・床・天井のような構造体は「上を越える」ことができないので除く
+   * (建物モードで壁を避けたいときは routes に通れる線を書く)。
+   *
+   * @param {Array} boxes CollisionWorld.boxes
+   */
+  setObstacles(boxes) {
+    const STRUCTURAL = new Set(['wall', 'slab', 'ceiling']);
+    this.obstacles = (boxes || [])
+      .filter((b) => !STRUCTURAL.has(b.name))
+      .map((b) => ({ c: b.center, h: b.half, cos: b.cos, sin: b.sin }));
+    this.rebuild();
+  }
+
+  /**
    * 建物プリセットを渡す (単室なら null)。
    * pattern = 'route' のとき preset.routes から経路を取る。
    */
@@ -41,7 +57,7 @@ export class Trajectory {
   routeNames() { return this.building ? Object.keys(this.building.routes || {}) : []; }
 
   rebuild() {
-    this.points = this.generatePoints();
+    this.points = this.avoidObstacles(this.generatePoints());
     this.lengths = [];
     this.total = 0;
     for (let i = 1; i < this.points.length; i++) {
@@ -51,6 +67,121 @@ export class Trajectory {
     }
     this.duration = this.total / Math.max(this.cfg.speed, 1e-3);
     this.randomState = null;
+  }
+
+  /**
+   * 軌道が障害物 (家具・設備) を通らないように引き直す。
+   *
+   * やり方:
+   *   1. 区間を 0.3m ごとに刻み、刺さる位置に点を挿し込む
+   *   2. 各点を、めり込んでいる箱から抜ける向きの候補 (上・横 2 方向) の中で
+   *      「移動量がいちばん小さいもの」から順に試し、どこにも当たらない位置へ移す
+   *   3. 抜けきれなければ、重なっている箱の天端まで真上へ逃がす
+   * を数回くり返す。機体は上を飛び越えられるので、上へ抜ける向きは 0.6 倍に
+   * 重み付けして優先する (机や棚の上を通る)。
+   *
+   * 部屋の外形 (壁) は避けようがないので対象外。建物の壁を避けたいときは
+   * 'route' パターンであらかじめ通れる線を与える (従来どおり)。
+   */
+  avoidObstacles(pts) {
+    const obs = this.obstacles;
+    if (!obs || !obs.length || pts.length < 2) return pts;
+    const CLEAR = 0.3;          // 障害物のまわりに確保する余裕 [m]
+    const UP_BIAS = 0.6;        // 上へ抜ける向きを優先する重み
+    const s = this.safeBounds();
+    // 逃げ道は安全マージンより広く取る。マージンは「パターンを壁から離す」ための
+    // ものなので、障害物を避けるときまで縛ると柱と壁の間に挟まって抜けられない。
+    const b = this.bounds;
+    const WALL = 0.35;
+    const fit = (p) => v3(
+      clamp(p.x, b.min.x + WALL, b.max.x - WALL),
+      clamp(p.y, s.minY, b.max.y - WALL),
+      clamp(p.z, b.min.z + WALL, b.max.z - WALL));
+
+    /** p にめり込んでいる箱をすべて返す */
+    const overlaps = (p) => {
+      const hit = [];
+      for (const b of obs) {
+        const dx = p.x - b.c.x, dz = p.z - b.c.z;
+        const lx = dx * b.cos + dz * b.sin;
+        const lz = -dx * b.sin + dz * b.cos;
+        const ex = b.h.x + CLEAR - Math.abs(lx);
+        const ey = b.h.y + CLEAR - Math.abs(p.y - b.c.y);
+        const ez = b.h.z + CLEAR - Math.abs(lz);
+        if (ex > 0 && ey > 0 && ez > 0) hit.push({ b, lx, lz, ex, ez });
+      }
+      return hit;
+    };
+
+    /** 抜ける向きの候補 (移動量の小さい順) */
+    const candidates = (p, hit) => {
+      const out = [];
+      for (const { b, lx, lz, ex, ez } of hit) {
+        const up = b.c.y + b.h.y + CLEAR - p.y;
+        out.push({ cost: up * UP_BIAS, d: v3(0, up, 0) });
+        const sx = lx > 0 ? ex : -ex;
+        out.push({ cost: ex, d: v3(sx * b.cos, 0, sx * b.sin) });
+        const sz = lz > 0 ? ez : -ez;
+        out.push({ cost: ez, d: v3(-sz * b.sin, 0, sz * b.cos) });
+      }
+      return out.sort((a, c) => a.cost - c.cost);
+    };
+
+    const push = (p) => {
+      for (let k = 0; k < 8; k++) {
+        const hit = overlaps(p);
+        if (!hit.length) return p;
+        const cands = candidates(p, hit);
+        // 一手で完全に抜けられる候補があればそれを採る
+        for (const c of cands) {
+          const q = fit(vadd(p, c.d));
+          if (!overlaps(q).length) return q;
+        }
+        // 抜けきれないので、いちばん小さい移動で進めてもう一周
+        const next = fit(vadd(p, cands[0].d));
+        if (vlen(vsub(next, p)) < 1e-4) break;    // クランプで動けない
+        p = next;
+      }
+      // 最後の手段 1: 重なっている箱の天端まで真上へ (床〜天井の柱では効かない)
+      let hit = overlaps(p);
+      if (hit.length) {
+        const top = Math.max(...hit.map((h) => h.b.c.y + h.b.h.y + CLEAR));
+        const q = fit(v3(p.x, Math.max(p.y, top), p.z));
+        if (!overlaps(q).length) return q;
+      }
+      // 最後の手段 2: 部屋の中心へ寄せる (中央は必ず空いている)
+      hit = overlaps(p);
+      if (hit.length) {
+        const cx = (b.min.x + b.max.x) / 2, cz = (b.min.z + b.max.z) / 2;
+        const dx = cx - p.x, dz = cz - p.z;
+        const len = Math.hypot(dx, dz) || 1;
+        for (let d = 0.25; d <= 4.0; d += 0.25) {
+          const q = fit(v3(p.x + (dx / len) * d, p.y, p.z + (dz / len) * d));
+          if (!overlaps(q).length) return q;
+        }
+      }
+      return p;
+    };
+
+    let cur = pts;
+    for (let round = 0; round < 2; round++) {
+      // 1) 線分の途中で刺さる位置に点を挿し込む
+      const dense = [cur[0]];
+      for (let i = 0; i + 1 < cur.length; i++) {
+        const a = cur[i], b = cur[i + 1];
+        const n = Math.min(48, Math.ceil(vlen(vsub(b, a)) / 0.3));
+        for (let k = 1; k < n; k++) {
+          const t = k / n;
+          const q = v3(a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t, a.z + (b.z - a.z) * t);
+          if (overlaps(q).length) dense.push(q);
+        }
+        dense.push(b);
+      }
+      // 2) すべての点を外へ押し出す
+      cur = dense.map(push);
+      if (!cur.some((p) => overlaps(p).length)) break;
+    }
+    return cur;
   }
 
   /** 部屋の内側に安全マージンを取った範囲 */

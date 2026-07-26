@@ -115,6 +115,8 @@ class App {
     this.sim.trajectory.setBuilding(
       this.env.mode === 'building' ? BUILDING_PRESETS[this.env.building] : null);
     this.sim.trajectory.setRoom(this.world.room);
+    // 家具・設備を避けて軌道を引き直す (壁は route パターンで与える)
+    this.sim.trajectory.setObstacles(this.world.boxes);
     this.renderer.setPath(this.sim.trajectory.polyline());
     // 環境が変わったら安全な初期位置へ
     this.sim.reset({ position: this.spawnPosition() });

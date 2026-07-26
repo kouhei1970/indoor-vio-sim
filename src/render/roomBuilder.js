@@ -9,7 +9,7 @@
 import * as THREE from 'three';
 import { RectAreaLightUniformsLib } from 'three/addons/lights/RectAreaLightUniformsLib.js';
 import { getTexture } from './textures.js';
-import { makeFurniture } from './furniture.js';
+import { makeFurniture, ON_TABLE_KINDS } from './furniture.js';
 import { mergeByMaterial } from './geometryMerge.js';
 import { ROOM_PRESETS, LIGHTING_PRESETS } from '../config/rooms.js';
 import { makeRng, v3 } from '../core/math.js';
@@ -300,9 +300,33 @@ export class RoomBuilder {
     const area = W * D;
     const count = Math.round(area * 0.12 * density);
     const placed = [];
+    const tops = [];      // 天板 {x, z, y, yaw}
 
+    const put = (kind, pos, y, yaw) => {
+      const obj = makeFurniture(kind, rng);
+      if (!obj) return null;
+      obj.group.position.set(pos.x, y, pos.z);
+      obj.group.rotation.y = yaw;
+      obj.group.traverse((o) => {
+        if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; }
+      });
+      this.group.add(obj.group);
+      for (const c of obj.colliders) {
+        const cx = pos.x + c.center.x * Math.cos(yaw) + c.center.z * Math.sin(yaw);
+        const cz = pos.z - c.center.x * Math.sin(yaw) + c.center.z * Math.cos(yaw);
+        this.world.addBox(v3(cx, y + c.center.y, cz), c.half, yaw, kind,
+          { friction: 0.6, restitution: 0.08 });
+      }
+      return obj;
+    };
+
+    // --- 1 段目: 床に置く家具 ---
+    // モニタのように机の上に載るものは、床に直接置くと宙に浮いて見えるので
+    // ここでは置かず、2 段目で天板の上へ載せる。
+    const floorKinds = kinds.filter((k) => !ON_TABLE_KINDS.includes(k));
+    const tableKinds = kinds.filter((k) => ON_TABLE_KINDS.includes(k));
     for (let i = 0; i < count; i++) {
-      const kind = rng.pick(kinds);
+      const kind = floorKinds.length ? rng.pick(floorKinds) : rng.pick(kinds);
       // 重ならない位置を探す
       let pos = null;
       for (let attempt = 0; attempt < 24; attempt++) {
@@ -316,23 +340,25 @@ export class RoomBuilder {
       if (!pos) continue;
       placed.push(pos);
       const yaw = rng.pick([0, PI / 2, PI, -PI / 2]) + rng.range(-0.15, 0.15);
-      const obj = makeFurniture(kind, rng);
-      if (!obj) continue;
-      obj.group.position.set(pos.x, 0, pos.z);
-      obj.group.rotation.y = yaw;
-      obj.group.traverse((o) => {
-        if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; }
-      });
-      this.group.add(obj.group);
-      // 当たり判定
-      for (const c of obj.colliders) {
-        const cx = pos.x + c.center.x * Math.cos(yaw) + c.center.z * Math.sin(yaw);
-        const cz = pos.z - c.center.x * Math.sin(yaw) + c.center.z * Math.cos(yaw);
-        this.world.addBox(v3(cx, c.center.y, cz), c.half, yaw, kind,
-          { friction: 0.6, restitution: 0.08 });
+      const obj = put(kind, pos, 0, yaw);
+      if (obj && obj.surface) tops.push({ ...pos, y: obj.surface, yaw });
+    }
+
+    // --- 2 段目: 机やキャビネットの上に置く家具 ---
+    if (tableKinds.length && tops.length) {
+      const n = Math.min(tops.length, Math.max(1, Math.round(count * 0.35)));
+      const used = new Set();
+      for (let i = 0; i < n; i++) {
+        let k = rng.int(0, tops.length - 1);
+        for (let a = 0; a < 6 && used.has(k); a++) k = rng.int(0, tops.length - 1);
+        if (used.has(k)) continue;
+        used.add(k);
+        const t = tops[k];
+        put(rng.pick(tableKinds), { x: t.x, z: t.z }, t.y, t.yaw);
       }
     }
   }
+
 
 
   /* ------------------------------------------------------------ */

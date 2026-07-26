@@ -150,6 +150,38 @@ try {
         floorGap,
       });
     }
+    // --- 目標軌跡が障害物を通らないか ---
+    // 家具・設備の中を通る軌道を出すと、追従した機体がぶつかり続ける。
+    out.trajectory = [];
+    const STRUCTURAL = new Set(['wall', 'slab', 'ceiling']);
+    const insideCount = (pts) => {
+      let n = 0;
+      for (const p of pts) {
+        for (const b of a.world.boxes) {
+          if (STRUCTURAL.has(b.name)) continue;
+          const dx = p.x - b.center.x, dz = p.z - b.center.z;
+          const lx = dx * b.cos + dz * b.sin, lz = -dx * b.sin + dz * b.cos;
+          if (Math.abs(lx) < b.half.x + 0.2 && Math.abs(lz) < b.half.z + 0.2
+              && p.y < b.center.y + b.half.y + 0.2 && p.y > b.center.y - b.half.y - 0.2) { n++; break; }
+        }
+      }
+      return n;
+    };
+    for (const [mode, key] of [['room', 'warehouse'], ['room', 'factory'], ['building', 'factory']]) {
+      a.env.mode = mode;
+      if (mode === 'room') {
+        a.env.preset = key;
+        a.env.size = { ...rooms.ROOM_PRESETS[key].size };
+        a.env.lighting = rooms.ROOM_PRESETS[key].lighting;
+      } else a.env.building = key;
+      a.rebuildRoom();
+      for (const pattern of ['lawnmower', 'perimeter']) {
+        a.sim.trajectory.cfg.pattern = pattern;
+        a.applyTrajectory();
+        out.trajectory.push({ key: `${key}/${pattern}`, hits: insideCount(a.sim.trajectory.polyline()) });
+      }
+    }
+
     a.env.mode = 'room';
     a.sim.trajectory.cfg.pattern = 'lawnmower';
 
@@ -208,6 +240,8 @@ try {
   check(report.presets.every((p) => Math.abs(p.landed) < 0.008),
     '全機体が床にめり込まず接地する',
     report.presets.map((p) => `${p.key}:${(p.landed * 1000).toFixed(1)}mm`).join(' '));
+  check(report.trajectory.every((t) => t.hits === 0), '目標軌跡が障害物を通らない',
+    report.trajectory.map((t) => `${t.key}:${t.hits}`).join(' '));
   check(report.image.mean > 60 && report.image.mean < 190, '搭載カメラの露出',
     `平均輝度 ${report.image.mean.toFixed(0)}/255, 白飛び ${report.image.clipPct.toFixed(1)}%`);
   check(report.image.clipPct < 15, '白飛びが過大でない');
