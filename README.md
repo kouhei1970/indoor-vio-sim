@@ -791,7 +791,8 @@ node tools/building_check.mjs ./shots  # 建物のスクリーンショットを
 
 **`npm run smoke`** — 実際に Chromium で読み込み、全機体プリセット・全パーツ形状・
 全ロータ配置・全部屋・全建物を一巡させて、例外が出ないこと・メッシュと当たり判定が
-生成されること・**画像の露出が妥当な範囲にあること**を確認します。
+生成されること・**画像の露出が妥当な範囲にあること**・**全機体が発散せずに着地し、
+床にめり込まないこと** (描画モデルの最下点と床の差が 8mm 以内) を確認します。
 playwright が要ります (`npm install playwright && npx playwright install chromium`)。
 
 ---

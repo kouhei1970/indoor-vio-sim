@@ -244,41 +244,103 @@ export function buildCollisionShape(config, massProps) {
 }
 
 /**
+ * 当たり判定の最下点を、描画モデルの最下点に合わせる。
+ *
+ * 衝突形状は球の集まりなので、実際に描かれる形 (薄い円盤のプロペラ、
+ * 細い脚) とは必ずずれる。とくに脚は
+ *
+ *   描画の脚先 = 胴体の下面 - 脚長 - 足の丸み
+ *   判定の脚先 = 胴体の中心 - 脚長 - 12mm (固定)
+ *
+ * と定義が違っていたため、胴体の高さの半分ぶんだけ判定が浅く、
+ * 機体が床にめり込んで見えた (X8 で 59mm、ヘキサで 30mm)。
+ * 逆に脚の無い機体では、胴体の外接球が下へ張り出して浮いて見えた。
+ *
+ * ここで「いちばん下の球の底 = 描画モデルの最下点」に揃えることで、
+ * 見えている接地面と物理の接地面を一致させる。横方向の当たりは
+ * 球の水平方向の広がりで決まるので、この上下の調整では変わらない。
+ *
+ * @param {Array} shape buildCollisionShape() の戻り値 (重心基準)
+ * @param {number} modelBottomY 描画モデルの最下点 (重心基準) [m]
+ */
+export function fitShapeToModel(shape, modelBottomY) {
+  if (!shape || !shape.length || !Number.isFinite(modelBottomY)) return shape;
+  let low = Infinity;
+  for (const s of shape) low = Math.min(low, s.offset.y - s.radius);
+  const d = modelBottomY - low;
+  if (Math.abs(d) < 1e-4) return shape;
+  if (d > 0) {
+    // 球がモデルより下へ出ている (浮いて見える) → はみ出した球を引っ込める
+    for (const s of shape) {
+      if (s.offset.y - s.radius < modelBottomY) s.offset.y = modelBottomY + s.radius;
+    }
+  } else {
+    // モデルが球より下にある (めり込んで見える) → 最下の球を接地面まで下げる
+    for (const s of shape) {
+      if (s.offset.y - s.radius < low + 1e-4) s.offset.y += d;
+    }
+  }
+  return shape;
+}
+
+/**
  * 接触力の計算 (バネ・ダンパ + 摩擦)。
  * @returns {{force, torque, contactCount, maxDepth}} 機体重心まわりのワールド座標の力・トルク
  */
-export function contactForces(world, state, shape, params) {
+export function contactForces(world, state, shape, params, mass = 0, dt = 0) {
   let force = v3(0, 0, 0);
   let torque = v3(0, 0, 0);
   let contactCount = 0;
   let maxDepth = 0;
 
+  // --- 接触点をいったん集める ---
+  // 減衰係数の上限を決めるのに接触点の数が要るため、2 段階にしている。
+  const hits = [];
   for (const s of shape) {
     const rW = qrot(state.q, s.offset);          // 重心からのオフセット (ワールド)
     const pW = vadd(state.p, rW);
-    const cs = world.contacts(pW, s.radius);
-    for (const c of cs) {
-      contactCount++;
-      maxDepth = Math.max(maxDepth, c.depth);
-      // 接触点速度
-      const vPoint = vadd(state.v, vcross(qrot(state.q, state.omega), rW));
-      const vn = vdot(vPoint, c.normal);
-      const kn = params.stiffness;
-      const cn = params.damping;
-      let fn = kn * c.depth - cn * Math.min(vn, 0);
-      fn = Math.max(fn, 0);
-      const fNormal = vmul(c.normal, fn);
-      // 摩擦 (接線方向)
-      const vT = vsub(vPoint, vmul(c.normal, vn));
-      const vTlen = vlen(vT);
-      const mu = c.friction ?? 0.6;
-      const fT = vTlen > 1e-6
-        ? vmul(vT, -Math.min(mu * fn, params.tangentDamping * vTlen) / vTlen)
-        : v3(0, 0, 0);
-      const f = vadd(fNormal, fT);
-      force = vadd(force, f);
-      torque = vadd(torque, vcross(rW, f));
-    }
+    for (const c of world.contacts(pW, s.radius)) hits.push({ rW, c });
+  }
+
+  // --- 減衰係数の安定化 ---
+  //
+  // 接触は陽解法 (前進オイラー) で積分するので、減衰力が大きすぎると
+  // 1 ステップで速度が行き過ぎて符号が反転し、跳ね返るたびに増幅して発散する。
+  // 1 自由度で見ると、安定条件は
+  //
+  //     c_total · dt / m < 2
+  //
+  // で、接触点が N 個あると実効的な減衰は N 倍になる。安全率 2 を見て
+  // c_total · dt / m ≦ 1 に収まるよう、1 点あたりの減衰を頭打ちにする。
+  //
+  // これが無いと、軽い機体 (ナノ機 37g) が着地した瞬間に 8m/s で跳ね返り、
+  // 数ステップで NaN になっていた。重い機体では上限に掛からないので、
+  // 着地の感触は変わらない。
+  let cn = params.damping;
+  if (mass > 0 && dt > 0 && hits.length > 0) {
+    cn = Math.min(cn, mass / (dt * hits.length));
+  }
+
+  for (const { rW, c } of hits) {
+    contactCount++;
+    maxDepth = Math.max(maxDepth, c.depth);
+    // 接触点速度
+    const vPoint = vadd(state.v, vcross(qrot(state.q, state.omega), rW));
+    const vn = vdot(vPoint, c.normal);
+    const kn = params.stiffness;
+    let fn = kn * c.depth - cn * Math.min(vn, 0);
+    fn = Math.max(fn, 0);
+    const fNormal = vmul(c.normal, fn);
+    // 摩擦 (接線方向)
+    const vT = vsub(vPoint, vmul(c.normal, vn));
+    const vTlen = vlen(vT);
+    const mu = c.friction ?? 0.6;
+    const fT = vTlen > 1e-6
+      ? vmul(vT, -Math.min(mu * fn, params.tangentDamping * vTlen) / vTlen)
+      : v3(0, 0, 0);
+    const f = vadd(fNormal, fT);
+    force = vadd(force, f);
+    torque = vadd(torque, vcross(rW, f));
   }
   // トルクは機体座標へ
   return {

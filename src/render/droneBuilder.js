@@ -184,7 +184,32 @@ export class DroneBuilder {
     this.group.traverse((o) => {
       if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; }
     });
+    this.measureBounds();
     return this.group;
+  }
+
+  /**
+   * モデルの外形 (重心を原点とする機体座標) を測る。
+   *
+   * group はシーンの中で機体の位置・姿勢に置かれているので、
+   * そのまま Box3 を取るとワールド座標になってしまう。一時的に
+   * 原点・無回転へ戻してから測り、元に戻す。
+   *
+   * bounds.min.y が接地面 (脚先やプロペラの下端) で、これを物理側へ
+   * 渡して当たり判定の最下点を合わせる (simulator.setModelBottom)。
+   */
+  measureBounds() {
+    const g = this.group;
+    const pos = g.position.clone();
+    const quat = g.quaternion.clone();
+    g.position.set(0, 0, 0);
+    g.quaternion.identity();
+    g.updateMatrixWorld(true);
+    this.bounds = new THREE.Box3().setFromObject(g);
+    g.position.copy(pos);
+    g.quaternion.copy(quat);
+    g.updateMatrixWorld(true);
+    return this.bounds;
   }
 
   /* ------------------------------------------------------------ */

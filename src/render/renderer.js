@@ -279,10 +279,45 @@ export class SceneRenderer {
 
     const s = next.size;
     const spawn = this.spawnPoint();
-    this.controls.target.set(spawn.x, Math.min(1.2, s.height / 2), spawn.z);
-    // 建物は大きいので、外形から見渡せる距離に引く
+
+    // --- 既定の視点 ---
+    //
+    // 環境の外形に合わせて引くと、建物 (学校は幅 40m) では機体が点にしか
+    // ならず、どこにいるのか分からない。機体の少し後ろ上から見る近景にする。
+    // ただしそのままでは壁や天井の中に入ってしまうので、機体から視点の向きへ
+    // レイを飛ばし、当たった手前で止める (当たり判定をそのまま使う)。
+    const eye = { x: spawn.x, y: spawn.y + 0.35, z: spawn.z };
+    this.controls.target.set(eye.x, eye.y, eye.z);
+    const want = env.mode === 'building'
+      ? 2.5                                              // 建物は常に近景
+      : Math.min(Math.max(s.width, s.depth) * 0.5, 5.0); // 単室は部屋が入る程度
+    // 斜め 4 方向を試して、いちばん空いている向きから見る。
+    // 機体は階段室や部屋の隅に湧くことがあるので、決め打ちの 1 方向だと
+    // 壁が近すぎて機体に寄りすぎる。
+    let dir = null, dist = 0;
+    for (let i = 0; i < 4; i++) {
+      const a = Math.PI / 4 + (i / 4) * Math.PI * 2;
+      const cand = new THREE.Vector3(Math.sin(a) * 0.72, 0.5, Math.cos(a) * 0.72).normalize();
+      const hit = this.world.raycast(eye, cand, want + 0.4);
+      const d = hit.hit ? Math.min(want, Math.max(0.6, hit.distance - 0.3)) : want;
+      if (d > dist) { dist = d; dir = cand; }
+    }
+    const cam = new THREE.Vector3(
+      eye.x + dir.x * dist, eye.y + dir.y * dist, eye.z + dir.z * dist);
+
+    // レイは窓やドアの開口をすり抜けるので、建物では機体のいる階の外形へ
+    // 押し込む。壁の中や建物の外に視点が出るのを防ぐ。
+    const f0 = next.floorInfo && next.floorInfo[0];
+    if (f0) {
+      const m = 0.6;
+      const o = f0.outline;
+      cam.x = Math.min(Math.max(cam.x, o.x0 + m), o.x1 - m);
+      cam.z = Math.min(Math.max(cam.z, o.z0 + m), o.z1 - m);
+      cam.y = Math.min(cam.y, f0.elevation + f0.height - 0.3);
+    }
+    this.camera.position.copy(cam);
+
     const d = Math.max(s.width, s.depth);
-    this.camera.position.set(spawn.x + d * 0.45, Math.max(s.height * 0.55, 2.2), spawn.z + d * 0.5);
     this.camera.far = Math.max(300, d * 4);
     this.camera.updateProjectionMatrix();
     this.controls.update();

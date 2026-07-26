@@ -56,9 +56,23 @@ try {
     for (const key of veh.PRESET_KEYS) {
       a.vehicle = veh.buildVehicle(key);
       a.rebuildVehicle();
+      // 着地させて、描画モデルの最下点が床とどれだけずれるかを測る。
+      // 当たり判定 (球の集まり) と描画モデルの定義がずれると、機体が床に
+      // めり込んだり浮いたりする。ここで見ておかないと静かに壊れる。
+      a.resetSim();
+      a.sim.setMode('rate');
+      a.sim.setCommand({ roll: 0, pitch: 0, yaw: 0, throttle: 0 });
+      a.sim.state.p.y = 0.4;
+      for (let i = 0; i < 1200; i++) a.sim.advance(1 / 400);
+      a.renderer.syncDrone(a.sim.state);
+      const box = a.renderer.droneBuilder.measureBounds().clone();
       out.presets.push({ key, meshes: meshCount(a.renderer.droneBuilder.group),
-        mass: a.sim.massProps.mass, twr: a.sim.perf.twr });
+        mass: a.sim.massProps.mass, twr: a.sim.perf.twr,
+        // 接地時のモデル最下点 [m] (負 = 床にめり込んでいる)
+        landed: a.sim.state.p.y + box.min.y,
+        finite: Number.isFinite(a.sim.state.p.y) });
     }
+    a.sim.setMode('position');
     a.vehicle = veh.buildVehicle('freestyle-5inch');
     for (const [part, shapes] of Object.entries(veh.PART_SHAPES)) {
       for (const shape of shapes) {
@@ -167,6 +181,13 @@ try {
     zeroMesh.length ? JSON.stringify(zeroMesh) : '');
   check(report.presets.every((p) => p.twr > 1.4 && p.twr < 12), '全機体の推力重量比が妥当',
     report.presets.map((p) => `${p.key}:${p.twr.toFixed(1)}`).join(' '));
+  check(report.presets.every((p) => p.finite), '全機体が着地しても発散しない',
+    report.presets.filter((p) => !p.finite).map((p) => p.key).join(' ') || '');
+  // 許容 8mm: 接触バネの沈み込み m*g/k (X8 3.6kg で約 4mm) を見込んだ値。
+  // これを超えるのは当たり判定と描画モデルの定義がずれている合図。
+  check(report.presets.every((p) => Math.abs(p.landed) < 0.008),
+    '全機体が床にめり込まず接地する',
+    report.presets.map((p) => `${p.key}:${(p.landed * 1000).toFixed(1)}mm`).join(' '));
   check(report.image.mean > 60 && report.image.mean < 190, '搭載カメラの露出',
     `平均輝度 ${report.image.mean.toFixed(0)}/255, 白飛び ${report.image.clipPct.toFixed(1)}%`);
   check(report.image.clipPct < 15, '白飛びが過大でない');

@@ -19,7 +19,7 @@ import { Mixer } from './mixer.js';
 import { MotorSystem } from './motor.js';
 import { FlightController, autoTuneController } from './controller.js';
 import { SensorSuite, noisyState } from './sensors.js';
-import { CollisionWorld, buildCollisionShape, contactForces } from './collision.js';
+import { CollisionWorld, buildCollisionShape, contactForces, fitShapeToModel } from './collision.js';
 import {
   WindField, AIR_PRESETS, groundEffectFactor, ceilingEffectFactor,
   inducedVelocity, translationalLift, vrsFactor, bodyDrag, rotorDrag, wallEffect,
@@ -75,6 +75,9 @@ export class Simulator {
     }
     this.controller = new FlightController(ctrlCfg);
     this.shape = buildCollisionShape(v, this.massProps);
+    // 描画モデルの最下点が分かっていれば、当たり判定の接地面をそこへ揃える
+    // (見えている接地面と物理の接地面を一致させる)
+    fitShapeToModel(this.shape, this.modelBottom);
     this.inertia = this.massProps.inertia;
     this.inertiaInv = m3inverse(this.inertia);
     this.perf = performanceSummary(v, this.massProps, this.air);
@@ -119,6 +122,22 @@ export class Simulator {
   }
 
   setAir(air) { this.air = { ...air }; this.rebuild(); }
+
+  /**
+   * 描画モデルの最下点 (重心基準) を教える。
+   *
+   * 当たり判定は球の集まりなので、そのままでは実際に描かれる形とずれる。
+   * ここで受け取った値に接地面を合わせることで、機体が床にめり込んだり
+   * 浮いたりして見えるのを防ぐ (collision.js の fitShapeToModel を参照)。
+   * 描画を持たない環境 (Node のテスト) では呼ばれず、従来どおりの形状になる。
+   *
+   * @param {number} y 最下点の高さ [m] (重心を原点とする機体座標)
+   */
+  setModelBottom(y) {
+    if (!Number.isFinite(y)) return;
+    this.modelBottom = y;
+    fitShapeToModel(this.shape, y);
+  }
 
   /**
    * 現在状態における力とトルクを計算する。
@@ -189,7 +208,9 @@ export class Simulator {
     torque = vadd(torque, gyroscopicTorque(this.rotorsCg, this.motors.speeds, v.power.rotorInertia, s.omega));
 
     // --- 接触 ---
-    const c = contactForces(this.world, s, this.shape, v.contact);
+    // 質量と刻み幅を渡して、陽解法で発散しない範囲に減衰を抑えてもらう
+    const c = contactForces(this.world, s, this.shape, v.contact,
+      this.massProps.mass, this.stepDt || 1 / (this.sim.physicsRate || 500));
     force = vadd(force, c.force);
     torque = vadd(torque, c.torque);
     this.contactInfo = c;
@@ -222,6 +243,7 @@ export class Simulator {
   stepOnce(dt) {
     const v = this.vehicle;
     const s = this.state;
+    this.stepDt = dt;      // 接触力の安定化に使う (contactForces を参照)
 
     // --- 風 ---
     const agl = this.world.heightAboveGround(s.p);
