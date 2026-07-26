@@ -10,6 +10,7 @@ import GUI from 'lil-gui';
 import { PRESETS, PRESET_KEYS, PART_SHAPES, buildVehicle } from '../config/vehicle.js';
 import { LAYOUTS } from '../core/airframe.js';
 import { ROOM_PRESETS, ROOM_KEYS, LIGHTING_PRESETS, LIGHTING_KEYS } from '../config/rooms.js';
+import { BUILDING_PRESETS, BUILDING_KEYS } from '../config/buildings.js';
 import { CAMERA_PRESETS } from '../render/cameraSensor.js';
 import { PATTERNS, YAW_MODES } from '../core/trajectory.js';
 import { AIR_PRESETS } from '../core/aero.js';
@@ -248,9 +249,19 @@ export function createGui(app, container) {
   /* ============================================================ */
   const fEnv = gui.addFolder('環境');
   fEnv.close();
+
+  // 単室 (1 部屋) と建物 (複数階) の切り替え
+  fEnv.add(app.env, 'mode', { '単室': 'room', '建物 (複数階)': 'building' })
+    .name('環境の種類').onChange(() => {
+      applyEnvMode();
+      rebuildRoom();
+      rebuildRouteList();   // 建物ルートの選択肢は環境の種類で変わる
+      gui.controllersRecursive().forEach((c) => c.updateDisplay());
+    });
+
   const roomLabels = {};
   for (const k of ROOM_KEYS) roomLabels[ROOM_PRESETS[k].name] = k;
-  fEnv.add(app.env, 'preset', roomLabels).name('部屋').onChange((key) => {
+  const cRoom = fEnv.add(app.env, 'preset', roomLabels).name('部屋').onChange((key) => {
     const p = ROOM_PRESETS[key];
     app.env.size = { ...p.size };
     app.env.lighting = p.lighting;
@@ -260,9 +271,37 @@ export function createGui(app, container) {
     rebuildRoom();
     gui.controllersRecursive().forEach((c) => c.updateDisplay());
   });
-  fEnv.add(app.env.size, 'width', 2, 40, 0.1).name('幅 [m]').onChange(rebuildRoom);
-  fEnv.add(app.env.size, 'depth', 2, 40, 0.1).name('奥行 [m]').onChange(rebuildRoom);
-  fEnv.add(app.env.size, 'height', 1.8, 12, 0.1).name('天井高 [m]').onChange(rebuildRoom);
+
+  const buildingLabels = {};
+  for (const k of BUILDING_KEYS) buildingLabels[BUILDING_PRESETS[k].name] = k;
+  const cBuilding = fEnv.add(app.env, 'building', buildingLabels).name('建物').onChange((key) => {
+    app.env.lighting = BUILDING_PRESETS[key].lighting || app.env.lighting;
+    rebuildRoom();
+    rebuildRouteList();
+    gui.controllersRecursive().forEach((c) => c.updateDisplay());
+  });
+  const buildingInfo = fEnv.add({ info: '' }, 'info').name('構成').disable();
+
+  const cW = fEnv.add(app.env.size, 'width', 2, 40, 0.1).name('幅 [m]').onChange(rebuildRoom);
+  const cD = fEnv.add(app.env.size, 'depth', 2, 40, 0.1).name('奥行 [m]').onChange(rebuildRoom);
+  const cH = fEnv.add(app.env.size, 'height', 1.8, 12, 0.1).name('天井高 [m]').onChange(rebuildRoom);
+
+  /** 環境の種類に応じて、関係ある項目だけ出す */
+  function applyEnvMode() {
+    const isBuilding = app.env.mode === 'building';
+    // 建物は間取りで寸法が決まるので、単室のときだけ部屋と寸法スライダを出す
+    for (const c of [cRoom, cW, cD, cH]) c.show(!isBuilding);
+    for (const c of [cBuilding, buildingInfo]) c.show(isBuilding);
+    if (isBuilding) {
+      const p = BUILDING_PRESETS[app.env.building];
+      if (p) {
+        buildingInfo.object.info =
+          `${p.floors.length} 層 / ${p.size.width}x${p.size.depth} m / 全高 ${p.size.height.toFixed(1)} m`;
+        buildingInfo.updateDisplay();
+      }
+    }
+  }
+
   fEnv.add(app.env, 'featureDensity', 0, 2, 0.05).name('模様の多さ').onChange(rebuildRoom);
   fEnv.add(app.env, 'furnitureDensity', 0, 3, 0.05).name('家具の量').onChange(rebuildRoom);
   fEnv.add(app.env, 'markerCount', 0, 24, 1).name('マーカー枚数').onChange(rebuildRoom);
@@ -342,9 +381,27 @@ export function createGui(app, container) {
     hover: 'ホバリング', waypoints: 'ウェイポイント', lawnmower: '往復スキャン',
     spiral: '螺旋', orbit: '周回 (注視点あり)', figure8: '8 の字',
     perimeter: '壁沿い一周', random: 'ランダムウォーク',
+    route: '建物ルート (点検・巡回)',
   };
   fTraj.add(app.sim.trajectory.cfg, 'pattern', listMap(PATTERNS, patternLabels))
     .name('パターン').onChange(applyTrajectory);
+
+  // 建物プリセットに書かれたルート (巡回・点検) を選ぶ
+  const routeLabels = { patrol: '巡回 (各階)', inspection: '設備点検', classroom: '教室を回る' };
+  let cRoute = null;
+  function rebuildRouteList() {
+    if (cRoute) { cRoute.destroy(); cRoute = null; }
+    const names = app.sim.trajectory.routeNames();
+    if (!names.length) return;
+    if (!names.includes(app.sim.trajectory.cfg.route)) app.sim.trajectory.cfg.route = names[0];
+    const labels = {};
+    for (const n of names) labels[routeLabels[n] || n] = n;
+    cRoute = fTraj.add(app.sim.trajectory.cfg, 'route', labels).name('ルート')
+      .onChange(applyTrajectory);
+    // パターンの直後へ移動する
+    const rows = fTraj.$children;
+    if (rows && rows.children.length > 1) rows.insertBefore(cRoute.domElement, rows.children[1]);
+  }
   fTraj.add(app.sim.trajectory.cfg, 'yawMode', listMap(YAW_MODES, {
     fixed: '固定', 'along-path': '進行方向', 'look-at': '注視点を向く', sweep: '連続旋回',
   })).name('機首の向き').onChange(applyTrajectory);
@@ -431,5 +488,16 @@ export function createGui(app, container) {
   fIo.add(app, 'loadConfig').name('設定を読み込む');
   fIo.add(app, 'resetSim').name('機体をリセット');
 
-  return { gui, refresh: () => gui.controllersRecursive().forEach((c) => c.updateDisplay()), rebuildGuiVehicle };
+  applyEnvMode();
+  rebuildRouteList();
+
+  return {
+    gui,
+    refresh: () => {
+      applyEnvMode();
+      rebuildRouteList();
+      gui.controllersRecursive().forEach((c) => c.updateDisplay());
+    },
+    rebuildGuiVehicle,
+  };
 }

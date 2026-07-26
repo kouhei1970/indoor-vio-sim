@@ -20,8 +20,11 @@
  *   --vehicle    機体プリセット (toy-90mm / nano-65mm / cinewhoop-3inch /
  *                freestyle-5inch / research-250 / hexa-inspection / x8-heavy / tricopter)
  *   --room       部屋 (lab / gym / corridor / warehouse / empty / livingroom / factory)
+ *   --building   建物 (school / community / factory / office) — 指定すると複数階の建物になる
+ *   --route      建物ルート名 (patrol / inspection / classroom)。--pattern route と併用
  *   --lighting   照明 (fluorescent / warm / highbay / corridor / single / mixed / dark)
- *   --pattern    軌道 (hover / waypoints / lawnmower / spiral / orbit / figure8 / perimeter / random)
+ *   --pattern    軌道 (hover / waypoints / lawnmower / spiral / orbit / figure8 /
+ *                perimeter / random / route)
  *   --tilt       カメラ俯角 [deg] (0=前方, 90=真下)
  *   --features   模様の多さ (0=のっぺり, 1=標準, 2=多い)
  *   --depth      深度マップも出力する
@@ -66,6 +69,8 @@ const options = {
   fps: num('fps', 10),
   vehicle: get('vehicle', 'research-250'),
   room: get('room', 'lab'),
+  building: get('building', null),
+  route: get('route', null),
   lighting: get('lighting', null),
   pattern: get('pattern', 'lawnmower'),
   yawMode: get('yaw-mode', 'along-path'),
@@ -91,12 +96,14 @@ const options = {
 
 const dt = 1 / options.fps;
 const name = options.name
-  || `${options.vehicle}-${options.room}-${options.pattern}-s${options.seed}`;
+  || `${options.vehicle}-${options.building || options.room}-${options.pattern}-s${options.seed}`;
 
 await mkdir(options.out, { recursive: true });
 
 console.log('データセット生成を開始します');
-console.log(`  機体: ${options.vehicle}   部屋: ${options.room}   軌道: ${options.pattern}`);
+console.log(`  機体: ${options.vehicle}   ${options.building ? '建物' : '部屋'}: `
+  + `${options.building || options.room}   軌道: ${options.pattern}`
+  + (options.route ? ` (${options.route})` : ''));
 console.log(`  画像: ${options.width}x${options.height}  ${options.frames} 枚 @ ${options.fps} fps`
   + `  (シミュレーション時間 ${(options.frames * dt).toFixed(1)} 秒)`);
 
@@ -140,8 +147,18 @@ try {
     }
 
     // --- 環境 ---
+    if (o.building && !cfg) {
+      const buildings = await import('/src/config/buildings.js');
+      if (!buildings.BUILDING_PRESETS[o.building]) {
+        throw new Error(`建物プリセットが見つかりません: ${o.building} `
+          + `(${buildings.BUILDING_KEYS.join(' / ')})`);
+      }
+      a.env.mode = 'building';
+      a.env.building = o.building;
+      a.env.lighting = o.lighting || buildings.BUILDING_PRESETS[o.building].lighting;
+    }
     const room = rooms.ROOM_PRESETS[o.room];
-    if (room && !cfg) {
+    if (room && !cfg && !o.building) {
       a.env.preset = o.room;
       a.env.size = { ...room.size };
       a.env.lighting = o.lighting || room.lighting;
@@ -167,6 +184,7 @@ try {
       pattern: o.pattern, yawMode: o.yawMode, speed: o.speed,
       altitude: o.altitude, radius: o.radius, seed: o.seed,
     });
+    if (o.route) a.sim.trajectory.cfg.route = o.route;
 
     // --- 記録設定 ---
     a.recorder.config.fps = o.fps;

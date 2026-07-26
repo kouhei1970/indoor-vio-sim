@@ -8,6 +8,7 @@ import { Simulator } from './core/simulator.js';
 import { CollisionWorld } from './core/collision.js';
 import { buildVehicle, SIM_DEFAULTS, deepMerge, clone } from './config/vehicle.js';
 import { ENV_DEFAULTS, ROOM_PRESETS } from './config/rooms.js';
+import { BUILDING_PRESETS } from './config/buildings.js';
 import { SceneRenderer } from './render/renderer.js';
 import { CAMERA_DEFAULTS } from './render/cameraSensor.js';
 import { DatasetRecorder } from './io/dataset.js';
@@ -96,15 +97,24 @@ class App {
 
   rebuildRoom() {
     this.renderer.buildRoom(this.env);
+    // 建物モードなら「建物ルート」の軌道が使えるようにプリセットを渡す
+    this.sim.trajectory.setBuilding(
+      this.env.mode === 'building' ? BUILDING_PRESETS[this.env.building] : null);
     this.sim.trajectory.setRoom(this.world.room);
     this.renderer.setPath(this.sim.trajectory.polyline());
-    // 部屋が変わったら安全な初期位置へ
-    const h = this.vehicle.parts.landingGear.enabled
-      ? this.vehicle.parts.landingGear.height + 0.05 : 0.06;
-    this.sim.reset({ position: v3(0, h, 0) });
+    // 環境が変わったら安全な初期位置へ
+    this.sim.reset({ position: this.spawnPosition() });
     this.sim.setMode(this.state.flightMode);
     this.sim.controller.targetPos = { ...this.sim.state.p };
     this.renderer.clearTrail();
+  }
+
+  /** 着地状態の初期位置 (脚の高さぶん浮かせる) */
+  spawnPosition() {
+    const h = this.vehicle.parts.landingGear.enabled
+      ? this.vehicle.parts.landingGear.height + 0.05 : 0.06;
+    const s = this.renderer.spawnPoint();
+    return v3(s.x, (s.y || 0) + h, s.z);
   }
 
   applyCamera() {
@@ -154,13 +164,26 @@ class App {
 
   togglePause() { this.state.paused = !this.state.paused; }
 
+  /** 今いる階の床の高さと階高。単室モードは床 = 0。 */
+  currentFloor() {
+    const b = this.renderer.buildingBuilder;
+    if (this.renderer.activeBuilder !== b) return { y: 0, height: this.env.size.height };
+    let best = { y: 0, height: 3.0 };
+    for (const f of b.floorInfo) {
+      if (f.elevation <= this.sim.state.p.y + 0.3) best = { y: f.elevation, height: f.height };
+    }
+    return best;
+  }
+
   toggleTakeoff() {
     const target = this.sim.controller.targetPos || { ...this.sim.state.p };
-    const cruise = Math.min(this.env.size.height - 0.5, 1.2);
-    if (this.sim.state.p.y < cruise * 0.5) {
+    // 建物モードでは今いる階の床を基準にする
+    const fl = this.currentFloor();
+    const cruise = fl.y + Math.min(fl.height - 0.6, 1.2);
+    if (this.sim.state.p.y < fl.y + (cruise - fl.y) * 0.5) {
       this.sim.controller.targetPos = { x: target.x, y: cruise, z: target.z };
     } else {
-      this.sim.controller.targetPos = { x: this.sim.state.p.x, y: 0.02, z: this.sim.state.p.z };
+      this.sim.controller.targetPos = { x: this.sim.state.p.x, y: fl.y + 0.02, z: this.sim.state.p.z };
     }
   }
 
@@ -171,9 +194,7 @@ class App {
   }
 
   resetSim() {
-    const h = this.vehicle.parts.landingGear.enabled
-      ? this.vehicle.parts.landingGear.height + 0.05 : 0.06;
-    this.sim.reset({ position: v3(0, h, 0) });
+    this.sim.reset({ position: this.spawnPosition() });
     this.sim.setMode(this.state.flightMode);
     this.sim.controller.targetPos = { ...this.sim.state.p };
     this.renderer.clearTrail();
@@ -405,4 +426,4 @@ window.addEventListener('DOMContentLoaded', () => {
   }
 });
 
-export { App, THREE, AIR_PRESETS, ROOM_PRESETS, qToEuler, RAD };
+export { App, THREE, AIR_PRESETS, ROOM_PRESETS, BUILDING_PRESETS, qToEuler, RAD };

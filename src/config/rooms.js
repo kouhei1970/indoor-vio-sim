@@ -147,7 +147,11 @@ export const LIGHTING_KEYS = Object.keys(LIGHTING_PRESETS);
 
 /** 環境設定のデフォルト (UI から編集される) */
 export const ENV_DEFAULTS = {
+  // 'room'     : 単室プリセット (ROOM_PRESETS)
+  // 'building' : 複数階の建物プリセット (BUILDING_PRESETS)
+  mode: 'room',
   preset: 'lab',
+  building: 'school',
   size: { width: 8, depth: 10, height: 2.8 },
   featureDensity: 1.0,     // テクスチャの模様の強さ (0 = のっぺり)
   furnitureDensity: 1.0,   // 家具の量

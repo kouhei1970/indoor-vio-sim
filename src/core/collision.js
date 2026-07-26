@@ -26,12 +26,23 @@ export class CollisionWorld {
 
   clearObstacles() { this.boxes = []; }
 
+  /**
+   * 直方体の障害物を追加する。
+   *
+   * yaw は描画側 (three.js の `mesh.rotation.y`) と同じ向き:
+   * Y 軸まわりの回転で、箱のローカル +Z が世界の (sin yaw, 0, cos yaw) を向く。
+   * 呼び出し側はメッシュに与えたのと同じ yaw をそのまま渡せる。
+   *
+   * 内部の変換式は「ローカル +Z が (-sin, 0, cos)」の形なので、
+   * ここで sin の符号を反転して保持する (以降 cos/sin を使う箇所は
+   * すべてこの反転済みの値で一貫している)。
+   */
   addBox(center, half, yaw = 0, name = 'obstacle', props = {}) {
     this.boxes.push({
       center, half, yaw, name,
       friction: props.friction ?? 0.6,
       restitution: props.restitution ?? 0.05,
-      cos: Math.cos(yaw), sin: Math.sin(yaw),
+      cos: Math.cos(yaw), sin: -Math.sin(yaw),
     });
     return this.boxes[this.boxes.length - 1];
   }

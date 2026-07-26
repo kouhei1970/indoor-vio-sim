@@ -9,24 +9,36 @@
  *   figure8    : 8 の字 (加減速と旋回が入るので VIO の評価に向く)
  *   perimeter  : 壁沿い一周 + ヨー掃引
  *   random     : ランダムウォーク (学習データの多様性確保)
+ *   route      : 建物プリセットに書かれた点検・巡回ルートを追従
+ *                (階段室や吹抜を通って上下階へ移動する。建物モード専用)
  *
  * ヨー制御は fixed / along-path / look-at / sweep から選べる。
  */
 
 import { v3, vadd, vsub, vmul, vlen, vnorm, clamp, lerp, makeRng, wrapPi } from './math.js';
 
-export const PATTERNS = ['hover', 'waypoints', 'lawnmower', 'spiral', 'orbit', 'figure8', 'perimeter', 'random'];
+export const PATTERNS = ['hover', 'waypoints', 'lawnmower', 'spiral', 'orbit', 'figure8', 'perimeter', 'random', 'route'];
 export const YAW_MODES = ['fixed', 'along-path', 'look-at', 'sweep'];
 
 export class Trajectory {
   constructor(cfg, roomBounds) {
     this.cfg = cfg;
     this.bounds = roomBounds;
+    this.building = null;
     this.rng = makeRng(cfg.seed ?? 2024);
     this.rebuild();
   }
 
   setRoom(bounds) { this.bounds = bounds; this.rebuild(); }
+
+  /**
+   * 建物プリセットを渡す (単室なら null)。
+   * pattern = 'route' のとき preset.routes から経路を取る。
+   */
+  setBuilding(preset) { this.building = preset || null; this.rebuild(); }
+
+  /** 現在の建物で選べるルート名 */
+  routeNames() { return this.building ? Object.keys(this.building.routes || {}) : []; }
 
   rebuild() {
     this.points = this.generatePoints();
@@ -136,6 +148,19 @@ export class Trajectory {
         }
         return c.smooth ? resample(catmullRomLoop(pts, false), c.resolution) : pts;
       }
+      case 'route': {
+        // 建物のルートは絶対座標で書かれているので、部屋の安全範囲では丸めない
+        // (階段室の吹抜を通って上下階へ移動するため、高度制限も掛けない)
+        const routes = this.building && this.building.routes;
+        const names = routes ? Object.keys(routes) : [];
+        if (!names.length) return [v3(c.hover.x, clamp(c.hover.y, s.minY, s.maxY), c.hover.z)];
+        const key = c.route && routes[c.route] ? c.route : names[0];
+        const raw = routes[key];
+        if (!raw || raw.length < 2) return [v3(c.hover.x, clamp(c.hover.y, s.minY, s.maxY), c.hover.z)];
+        const wps = raw.map((p) => v3(p.x, p.y, p.z));
+        // 平滑化しても制御点の外へは膨らませない (壁を突き抜けないように)
+        return resample(c.smooth ? catmullRomLoop(wps, c.loop, 6, true) : wps, c.resolution);
+      }
       case 'hover':
       default:
         return [v3(c.hover.x, clamp(c.hover.y, s.minY, s.maxY), c.hover.z)];
@@ -226,8 +251,15 @@ function smoothEnds(u, w) {
   return Math.min(s(a), s(b)) * 0.9 + 0.1;
 }
 
-/** Catmull-Rom スプラインで通過点を補間 */
-export function catmullRomLoop(pts, loop = true, samplesPerSeg = 12) {
+/**
+ * Catmull-Rom スプラインで通過点を補間する。
+ *
+ * @param {boolean} bound 制御点の外側へ膨らませない (建物内の経路で使う)。
+ *   Catmull-Rom は折り返しや急な角で制御点の外へオーバーシュートするため、
+ *   壁のある建物ではそのまま使うと壁を突き抜ける。true にすると各補間点を
+ *   その区間の制御点 4 点が張る直方体に丸め、角は落としつつ外へは出さない。
+ */
+export function catmullRomLoop(pts, loop = true, samplesPerSeg = 12, bound = false) {
   if (pts.length < 3) return pts.slice();
   const out = [];
   const n = pts.length;
@@ -238,13 +270,25 @@ export function catmullRomLoop(pts, loop = true, samplesPerSeg = 12) {
   const segs = loop ? n : n - 1;
   for (let i = 0; i < segs; i++) {
     const p0 = get(i - 1), p1 = get(i), p2 = get(i + 1), p3 = get(i + 2);
+    const box = bound ? controlBox(p0, p1, p2, p3) : null;
     for (let s = 0; s < samplesPerSeg; s++) {
       const t = s / samplesPerSeg;
-      out.push(catmullRom(p0, p1, p2, p3, t));
+      const p = catmullRom(p0, p1, p2, p3, t);
+      out.push(box ? v3(clamp(p.x, box.x0, box.x1), clamp(p.y, box.y0, box.y1),
+        clamp(p.z, box.z0, box.z1)) : p);
     }
   }
   if (!loop) out.push(pts[n - 1]);
   return out;
+}
+
+/** 制御点 4 点を含む最小の直方体 */
+function controlBox(...ps) {
+  return {
+    x0: Math.min(...ps.map((p) => p.x)), x1: Math.max(...ps.map((p) => p.x)),
+    y0: Math.min(...ps.map((p) => p.y)), y1: Math.max(...ps.map((p) => p.y)),
+    z0: Math.min(...ps.map((p) => p.z)), z1: Math.max(...ps.map((p) => p.z)),
+  };
 }
 
 function catmullRom(p0, p1, p2, p3, t) {
@@ -283,6 +327,7 @@ export const TRAJECTORY_DEFAULTS = {
   loop: false,
   yaw: 0,
   yawRate: 0.35,
+  route: 'patrol',
   hover: { x: 0, y: 1.2, z: 0 },
   lookAt: { x: 0, y: 0.9, z: 0 },
   waypoints: [],

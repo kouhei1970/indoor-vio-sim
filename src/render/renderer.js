@@ -11,6 +11,7 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import { RoomBuilder } from './roomBuilder.js';
+import { BuildingBuilder } from './buildingBuilder.js';
 import { DroneBuilder } from './droneBuilder.js';
 import { CameraSensor } from './cameraSensor.js';
 
@@ -60,6 +61,9 @@ export class SceneRenderer {
     this.controls.target.set(0, 1, 0);
 
     this.roomBuilder = new RoomBuilder(this.scene, world);
+    this.buildingBuilder = new BuildingBuilder(this.scene, world);
+    // 単室と建物は排他。実際に使っている方を activeBuilder が指す。
+    this.activeBuilder = this.roomBuilder;
     this.droneBuilder = new DroneBuilder();
     this.scene.add(this.droneBuilder.group);
 
@@ -181,13 +185,33 @@ export class SceneRenderer {
 
   /* ------------------------------------------------------------ */
 
+  /**
+   * 環境を作り直す。env.mode で単室 (room) と建物 (building) を切り替える。
+   * どちらのビルダも world.clearObstacles() を呼ぶので、
+   * 使わない方は先に clear() してメッシュを消しておく。
+   */
   buildRoom(env) {
-    this.roomBuilder.build(env);
-    const s = this.roomBuilder.size;
-    this.controls.target.set(0, Math.min(1.2, s.height / 2), 0);
-    this.camera.position.set(s.width * 0.45, s.height * 0.55, s.depth * 0.5);
+    const next = env.mode === 'building' ? this.buildingBuilder : this.roomBuilder;
+    if (this.activeBuilder && this.activeBuilder !== next) this.activeBuilder.clear();
+    this.activeBuilder = next;
+    next.build(env);
+
+    const s = next.size;
+    const spawn = this.spawnPoint();
+    this.controls.target.set(spawn.x, Math.min(1.2, s.height / 2), spawn.z);
+    // 建物は大きいので、外形から見渡せる距離に引く
+    const d = Math.max(s.width, s.depth);
+    this.camera.position.set(spawn.x + d * 0.45, Math.max(s.height * 0.55, 2.2), spawn.z + d * 0.5);
+    this.camera.far = Math.max(300, d * 4);
+    this.camera.updateProjectionMatrix();
     this.controls.update();
     this.showColliders(env.showColliders);
+  }
+
+  /** 機体の初期位置。単室なら原点、建物ならビルダに聞く。 */
+  spawnPoint() {
+    const b = this.activeBuilder;
+    return b && b.spawnPoint ? b.spawnPoint() : { x: 0, y: 0, z: 0 };
   }
 
   buildDrone(vehicle, com) {
@@ -270,7 +294,7 @@ export class SceneRenderer {
         break;
       }
       case 'top': {
-        const h = this.roomBuilder.size ? this.roomBuilder.size.height * 1.6 : 6;
+        const h = this.activeBuilder?.size ? this.activeBuilder.size.height * 1.6 : 6;
         this.camera.position.lerp(new THREE.Vector3(pos.x, h, pos.z + 0.01), Math.min(1, dt * 3));
         this.controls.target.lerp(pos, Math.min(1, dt * 5));
         this.controls.update();
@@ -307,7 +331,7 @@ export class SceneRenderer {
   render(state, opts) {
     const { time = 0, dt = 0.016, speeds = [] } = opts;
     this.droneBuilder.update(dt, speeds, time);
-    this.roomBuilder.update(time);
+    this.activeBuilder.update(time);
     this.syncDrone(state);
     this.updateViewCamera(state, dt);
 
@@ -398,6 +422,7 @@ export class SceneRenderer {
   dispose() {
     this.sensor.dispose();
     this.roomBuilder.clear();
+    this.buildingBuilder.clear();
     this.droneBuilder.dispose();
     this.renderer.dispose();
   }

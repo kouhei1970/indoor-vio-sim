@@ -7,7 +7,7 @@
   "scripts": {
     "start": "node tools/serve.mjs",
     "serve": "node tools/serve.mjs",
-    "test": "node --test tests/",
+    "test": "node --test tests/*.test.js",
     "dataset": "node tools/render_dataset.mjs",
     "smoke": "node tools/smoke.mjs"
   },

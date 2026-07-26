@@ -49,7 +49,7 @@ try {
     const veh = await import('/src/config/vehicle.js');
     const rooms = await import('/src/config/rooms.js');
     const { LAYOUTS } = await import('/src/core/airframe.js');
-    const out = { presets: [], shapes: [], layouts: [], rooms: [] };
+    const out = { presets: [], shapes: [], layouts: [], rooms: [], buildings: [] };
 
     const meshCount = (g) => { let n = 0; g.traverse((o) => { if (o.isMesh) n++; }); return n; };
 
@@ -86,6 +86,42 @@ try {
         colliders: a.world.boxes.length });
     }
 
+    // --- 建物プリセット (複数階) ---
+    const buildings = await import('/src/config/buildings.js');
+    for (const key of buildings.BUILDING_KEYS) {
+      const preset = buildings.BUILDING_PRESETS[key];
+      a.env.mode = 'building';
+      a.env.building = key;
+      a.env.lighting = preset.lighting;
+      a.rebuildRoom();
+      // 建物ルートを一通り生成できるか
+      const routes = [];
+      for (const r of a.sim.trajectory.routeNames()) {
+        a.sim.trajectory.cfg.pattern = 'route';
+        a.sim.trajectory.cfg.route = r;
+        a.applyTrajectory();
+        routes.push({ name: r, points: a.sim.trajectory.polyline().length });
+      }
+      // 初期位置が障害物に埋まっていないか (1 秒ホバリングして墜落しないこと)
+      a.sim.setMode('position');
+      a.sim.controller.targetPos = { ...a.sim.state.p, y: a.sim.state.p.y + 1.0 };
+      // 建物は描画が重いので物理だけ進め、描画の確認は 1 フレームだけにする
+      for (let i = 0; i < 300; i++) a.sim.advance(1 / 150);
+      a.headlessStep(1 / 60);
+      out.buildings.push({
+        key,
+        floors: preset.floors.length,
+        meshes: meshCount(a.renderer.buildingBuilder.group),
+        colliders: a.world.boxes.length,
+        routes,
+        spawn: a.renderer.spawnPoint(),
+        y: a.sim.state.p.y,
+        crashed: a.sim.crashed,
+      });
+    }
+    a.env.mode = 'room';
+    a.sim.trajectory.cfg.pattern = 'lawnmower';
+
     // 標準的な条件で 1 フレーム描画して露出を確認する
     a.env.preset = 'lab';
     a.env.size = { ...rooms.ROOM_PRESETS.lab.size };
@@ -106,12 +142,25 @@ try {
     return out;
   });
 
-  const zeroMesh = [...report.presets, ...report.shapes, ...report.layouts, ...report.rooms]
+  const zeroMesh = [...report.presets, ...report.shapes, ...report.layouts, ...report.rooms,
+    ...report.buildings]
     .filter((r) => r.meshes === 0);
   check(report.presets.length === 9, '機体プリセット', `${report.presets.length} 種`);
   check(report.shapes.length >= 35, 'パーツ形状', `${report.shapes.length} 通り`);
   check(report.layouts.length === 9, 'ロータ配置', `${report.layouts.length} 種`);
   check(report.rooms.length === 7, '部屋プリセット', `${report.rooms.length} 種`);
+  check(report.buildings.length === 4, '建物プリセット',
+    report.buildings.map((b) => `${b.key}(${b.floors}層)`).join(' '));
+  check(report.buildings.every((b) => b.meshes > 100), '建物のメッシュが生成される',
+    report.buildings.map((b) => `${b.key}:${b.meshes}`).join(' '));
+  check(report.buildings.every((b) => b.colliders > 50), '建物の当たり判定が登録される',
+    report.buildings.map((b) => `${b.key}:${b.colliders}`).join(' '));
+  check(report.buildings.every((b) => b.routes.length > 0 && b.routes.every((r) => r.points > 4)),
+    '建物ルートが生成される',
+    report.buildings.map((b) => `${b.key}:${b.routes.map((r) => r.name).join(',')}`).join(' '));
+  check(report.buildings.every((b) => !b.crashed && b.y > b.spawn.y + 0.5),
+    '建物の初期位置から離陸できる',
+    report.buildings.map((b) => `${b.key}:${b.y.toFixed(2)}m`).join(' '));
   check(zeroMesh.length === 0, 'すべての構成でメッシュが生成される',
     zeroMesh.length ? JSON.stringify(zeroMesh) : '');
   check(report.presets.every((p) => p.twr > 1.4 && p.twr < 12), '全機体の推力重量比が妥当',
