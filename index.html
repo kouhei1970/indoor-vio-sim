@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>屋内ドローン フライトシミュレータ — 自己位置推定研究用</title>
+  <link rel="stylesheet" href="./vendor/lil-gui/lil-gui.css">
+  <link rel="stylesheet" href="./styles/app.css">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🚁</text></svg>">
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "./vendor/three/three.module.js",
+      "three/addons/": "./vendor/three/addons/",
+      "lil-gui": "./vendor/lil-gui/lil-gui.esm.js"
+    }
+  }
+  </script>
+</head>
+<body>
+  <div id="app">
+    <div id="viewport">
+      <canvas id="view"></canvas>
+      <div id="overlay"></div>
+
+      <div id="toolbar">
+        <span class="brand">屋内ドローン シミュレータ</span>
+        <button id="btn-view" title="視点を切り替え (V)">視点</button>
+        <button id="btn-pause" title="一時停止 (P)">一時停止</button>
+        <button id="btn-reset" title="機体をリセット (R)">リセット</button>
+        <button id="btn-record" title="データ記録の開始/停止 (G)">記録</button>
+        <button id="btn-export" title="データセットを ZIP で書き出し">書き出し</button>
+        <button id="btn-help" title="操作方法 (H)">操作方法</button>
+        <button id="btn-gui" title="設定パネルの表示切替">設定</button>
+      </div>
+
+      <div id="toast"></div>
+
+      <div id="help">
+        <div class="help-inner">
+          <h2>操作方法</h2>
+          <div class="help-cols">
+            <div>
+              <h3>操縦</h3>
+              <table>
+                <tr><td>W / S</td><td>上昇 / 下降 (スロットル)</td></tr>
+                <tr><td>A / D</td><td>左旋回 / 右旋回 (ヨー)</td></tr>
+                <tr><td>↑ / ↓</td><td>前進 / 後退 (ピッチ)</td></tr>
+                <tr><td>← / →</td><td>左移動 / 右移動 (ロール)</td></tr>
+                <tr><td>Shift</td><td>微速モード</td></tr>
+                <tr><td>Space</td><td>離陸 / 着陸</td></tr>
+                <tr><td>ゲームパッド</td><td>接続すれば自動で認識 (Mode 2)</td></tr>
+              </table>
+            </div>
+            <div>
+              <h3>シミュレータ</h3>
+              <table>
+                <tr><td>M</td><td>フライトモード切替</td></tr>
+                <tr><td>V</td><td>視点切替 (自由 / 追従 / 機体カメラ / 俯瞰)</td></tr>
+                <tr><td>P</td><td>一時停止</td></tr>
+                <tr><td>R</td><td>機体をリセット</td></tr>
+                <tr><td>G</td><td>データセット記録の開始 / 停止</td></tr>
+                <tr><td>H</td><td>このヘルプ</td></tr>
+                <tr><td>マウス</td><td>ドラッグで視点回転、ホイールでズーム</td></tr>
+              </table>
+            </div>
+          </div>
+          <h3>研究用途の使い方</h3>
+          <ol>
+            <li>右の「機体」で機体を選ぶ / パーツの形・色・寸法・質量を編集する</li>
+            <li>「環境」で部屋・家具・模様の多さ・照明を設定する
+              (模様を減らすと特徴点が乏しい条件を作れる)</li>
+            <li>「搭載カメラ」で解像度・画角・レンズ歪み・ノイズを実機に合わせる</li>
+            <li>「飛行」でモードを<b>自動飛行</b>にし、軌道パターンを選ぶ</li>
+            <li>「データセット記録」で記録を開始し、<b>ZIP で書き出し</b></li>
+          </ol>
+          <p class="note">
+            書き出される ZIP には画像・真値軌跡 (TUM 形式)・IMU (EuRoC 形式)・
+            カメラ内部パラメータ (Kalibr 互換)・NeRF 用 transforms.json・
+            COLMAP 形式のポーズが含まれます。
+          </p>
+          <button id="btn-close-help">閉じる</button>
+        </div>
+      </div>
+    </div>
+    <div id="gui"></div>
+  </div>
+  <script type="module" src="./src/main.js"></script>
+</body>
+</html>

@@ -235,7 +235,7 @@ test('ロータ故障時はヨーを犠牲にして高度と姿勢を保つ (ヘ
     const e = qToEuler(sim.state.q);
     maxTilt = Math.max(maxTilt, Math.abs(e.roll), Math.abs(e.pitch));
   }
-  assert.ok(sim.thrusts[0] === 0, '故障ロータに推力が配分されている');
+  assert.ok(sim.thrusts[0] < 1e-3 && sim.thrustCmd[0] === 0, '故障ロータに推力が配分されている');
   assert.ok(Math.abs(sim.state.p.y - 2.0) < 0.3, `高度を維持できていない: ${sim.state.p.y.toFixed(2)} m`);
   assert.ok(maxTilt < 20 * DEG, `姿勢が崩れている: ${(maxTilt / DEG).toFixed(1)}deg`);
   // ヨーは制御を諦めるので回り始めるのが正しい挙動

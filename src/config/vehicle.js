@@ -37,7 +37,7 @@ export const DEFAULT_VEHICLE = {
   name: 'カスタム機体',
   description: '',
   massMode: 'auto',        // 'auto' = パーツ質量の合計, 'manual' = totalMass を使う
-  totalMass: 0.65,
+  totalMass: 0.628,
 
   frame: {
     layout: 'quad-x',
@@ -212,7 +212,7 @@ export const PRESETS = {
   'toy-90mm': {
     name: 'トイドローン 90mm (ガード付き)',
     description: 'Tello クラス。87g・プロペラガード付きで屋内飛行の定番。カメラは前方固定。',
-    totalMass: 0.087,
+    totalMass: 0.101,
     frame: { layout: 'quad-x', armLength: 0.048, motorHeight: 0.006 },
     parts: {
       body: {
@@ -243,7 +243,7 @@ export const PRESETS = {
   'nano-65mm': {
     name: 'ナノ機 65mm (Crazyflie クラス)',
     description: '27g の超小型機。狭い室内・群制御実験向け。慣性が小さく応答が速い。',
-    totalMass: 0.027,
+    totalMass: 0.037,
     frame: { layout: 'quad-x', armLength: 0.0325, motorHeight: 0.004 },
     parts: {
       body: { shape: 'plate', size: { x: 0.030, y: 0.006, z: 0.030 }, mass: 0.008, material: mat('#12331f', 0.1, 0.6), accentMaterial: mat('#d4af37', 0.9, 0.25) },
@@ -268,7 +268,7 @@ export const PRESETS = {
   'cinewhoop-3inch': {
     name: 'シネフープ 3インチ (ダクテッド)',
     description: '全周ダクトで屋内でも安全。350g・重心が低く、映像取得に向く。',
-    totalMass: 0.36,
+    totalMass: 0.421,
     frame: { layout: 'quad-x', armLength: 0.077, motorHeight: 0.010 },
     parts: {
       body: { shape: 'rounded-box', size: { x: 0.060, y: 0.030, z: 0.080 }, mass: 0.075, material: mat('#101215', 0.2, 0.4, { clearcoat: 0.4 }), accentMaterial: mat('#00c2a8', 0.3, 0.35) },
@@ -298,7 +298,7 @@ export const PRESETS = {
   'research-250': {
     name: '研究用 250mm (下向きカメラ)',
     description: '自己位置推定の実験機。下向きカメラ + ToF + オプティカルフローを想定した構成。',
-    totalMass: 0.78,
+    totalMass: 0.774,
     frame: { layout: 'quad-x', armLength: 0.125, motorHeight: 0.014 },
     parts: {
       body: { shape: 'box', size: { x: 0.090, y: 0.045, z: 0.110 }, mass: 0.18, material: mat('#2c3138', 0.4, 0.5), accentMaterial: mat('#f5a623', 0.2, 0.4) },
@@ -320,7 +320,7 @@ export const PRESETS = {
   'hexa-inspection': {
     name: 'ヘキサコプター 点検機',
     description: '1.8kg・6 発。1 基が停止しても飛行を継続できる冗長構成。',
-    totalMass: 1.8,
+    totalMass: 2.114,
     frame: { layout: 'hexa-x', armLength: 0.28, motorHeight: 0.018, rotorCant: 2 },
     parts: {
       body: { shape: 'cylinder', size: { x: 0.16, y: 0.06, z: 0.16 }, mass: 0.42, material: mat('#3b4048', 0.5, 0.4, { clearcoat: 0.3 }), accentMaterial: mat('#ffffff', 0.1, 0.4) },
@@ -344,7 +344,7 @@ export const PRESETS = {
   'x8-heavy': {
     name: 'X8 同軸反転 (重量物運搬)',
     description: '3.2kg・8 発の同軸反転機。コンパクトな寸法で大きな推力を得る構成。',
-    totalMass: 3.2,
+    totalMass: 3.62,
     frame: { layout: 'octa-coax', armLength: 0.30, motorHeight: 0.02, coaxSpacing: 0.09, coaxEfficiency: 0.78 },
     parts: {
       body: { shape: 'rounded-box', size: { x: 0.20, y: 0.09, z: 0.24 }, mass: 0.70, material: mat('#1a1d22', 0.4, 0.4), accentMaterial: mat('#ff9500', 0.2, 0.4) },
@@ -367,7 +367,7 @@ export const PRESETS = {
   'tricopter': {
     name: 'トライコプター (テールサーボ)',
     description: '3 発 + テールサーボでヨーを作る構成。非対称機体の推定実験に。',
-    totalMass: 0.55,
+    totalMass: 0.539,
     frame: { layout: 'tri', armLength: 0.16, motorHeight: 0.012 },
     parts: {
       body: { shape: 'wedge', size: { x: 0.07, y: 0.035, z: 0.12 }, mass: 0.13, material: mat('#4a2f6b', 0.3, 0.45), accentMaterial: mat('#c9a7ff', 0.2, 0.4) },
