@@ -91,8 +91,171 @@ export class Trajectory {
       this.total += d;
       this.lengths.push(this.total);
     }
-    this.duration = this.total / Math.max(this.cfg.speed, 1e-3);
+    this.buildSpeedProfile();
     this.randomState = null;
+  }
+
+  /**
+   * 経路に沿った速度の割り当て (時間パラメータ化)。
+   *
+   * 経路が幾何的に安全でも、等速で追従すると鋭角で破綻する。半径 r の角を
+   * 速度 v で曲がるには向心加速度 v^2/r が要るので、角が鋭いほど (r→0)
+   * 必要な加速度が発散し、機体は曲がりきれずに外へ膨らんで衝突する。
+   *
+   * そこで経路の形はそのままに、速度のほうを実行可能な範囲へ落とす。
+   * 経路が決まったあとに速度を割り当てるので、時間最適経路パラメータ化
+   * (TOPP; Bobrow 1985 / Pham 2014) の最も簡単な形にあたる。
+   *
+   *   1. 各点の曲率 κ から横方向の上限   v ≤ √(a_lat / κ)
+   *   2. 前向き走査で加速の上限          v[i+1]² ≤ v[i]² + 2 a_tan ds
+   *   3. 後ろ向き走査で減速の上限        v[i]²   ≤ v[i+1]² + 2 a_tan ds
+   *
+   * a_lat はマルチコプタでは傾き角で決まる (a = g tanθ)。既定の 4.0 m/s² は
+   * 傾き 22° 相当で、姿勢制御の追従遅れを見込んだ控えめな値。
+   */
+  buildSpeedProfile() {
+    const c = this.cfg;
+    const pts = this.points;
+    const n = pts.length;
+    this.speeds = new Array(Math.max(n, 1)).fill(0);
+    this.times = new Array(Math.max(n, 1)).fill(0);
+    if (n < 2 || this.total < 1e-6) { this.duration = 0; return; }
+
+    const vMax = Math.max(0.05, c.speed);
+    const aLat = Math.max(0.2, c.maxLateralAccel ?? 4.0);
+    const aTan = Math.max(0.2, c.maxTangentialAccel ?? 2.0);
+    const V_FLOOR = 0.05;                   // 完全停止で時間が発散しないように
+    const v = new Array(n).fill(vMax);
+    const ds = (i) => vlen(vsub(pts[i + 1], pts[i]));
+
+    // 1) 曲率による上限 (Menger の曲率: 3 点を通る円の半径の逆数)
+    for (let i = 1; i + 1 < n; i++) {
+      const a = pts[i - 1], b = pts[i], d = pts[i + 1];
+      const ab = vlen(vsub(b, a)), bc = vlen(vsub(d, b)), ac = vlen(vsub(d, a));
+      if (ab < 1e-6 || bc < 1e-6 || ac < 1e-6) continue;
+      // 三角形の面積 (外積の大きさ / 2)
+      const ux = b.x - a.x, uy = b.y - a.y, uz = b.z - a.z;
+      const wx = d.x - a.x, wy = d.y - a.y, wz = d.z - a.z;
+      const cx = uy * wz - uz * wy, cy = uz * wx - ux * wz, cz = ux * wy - uy * wx;
+      const area2 = Math.hypot(cx, cy, cz);          // = 2 x 面積
+      const kappa = area2 / (ab * bc * ac);          // 曲率 = 4S/(abc) = 2*area2/(2abc)
+      if (kappa > 1e-9) v[i] = Math.min(v[i], Math.sqrt(aLat / kappa));
+    }
+
+    // 端点。折り返し (loop = false) では停止して向きを変える
+    if (!c.loop) { v[0] = 0; v[n - 1] = 0; }
+
+    // 2) 前向き走査 (加速の上限)。周回では 2 周ぶん回して境目をなじませる
+    const passes = c.loop ? 2 : 1;
+    for (let r = 0; r < passes; r++) {
+      for (let i = 0; i + 1 < n; i++) {
+        v[i + 1] = Math.min(v[i + 1], Math.sqrt(v[i] * v[i] + 2 * aTan * ds(i)));
+      }
+      if (c.loop) v[0] = Math.min(v[0], v[n - 1]);
+    }
+    // 3) 後ろ向き走査 (減速の上限)
+    for (let r = 0; r < passes; r++) {
+      for (let i = n - 2; i >= 0; i--) {
+        v[i] = Math.min(v[i], Math.sqrt(v[i + 1] * v[i + 1] + 2 * aTan * ds(i)));
+      }
+      if (c.loop) v[n - 1] = Math.min(v[n - 1], v[0]);
+    }
+
+    // 4) 時刻表 (区間内は等加速度とみなし、平均速度で時間を出す)
+    this.speeds = v;
+    this.times[0] = 0;
+    for (let i = 0; i + 1 < n; i++) {
+      const vm = Math.max(V_FLOOR, (v[i] + v[i + 1]) / 2);
+      this.times[i + 1] = this.times[i] + ds(i) / vm;
+    }
+    this.duration = this.times[n - 1];
+    this.buildYawProfile();
+  }
+
+  /**
+   * 経路に沿った機首方位の割り当て。
+   *
+   * 'along-path' は進行方向を向くが、往復スキャンの折り返しのように経路が
+   * 鋭角に曲がると**目標方位が不連続に反転する**。制御器はそれを追おうとして
+   * 過大なヨー角速度を出し、ロール/ピッチと干渉して機体が転倒する
+   * (実測: ヨー角速度 -564°/s、傾き 88° に達して墜落)。
+   *
+   * そこで速度と同じ考え方で、方位にも変化率の上限を掛ける。
+   *   前向き走査  : 角を過ぎたあとゆっくり向き直る
+   *   後ろ向き走査: 角の手前から向き始める (人が操縦するときと同じ)
+   * 双方向にするのが要点で、前向きだけだと角に入ってから回り始めて間に合わない。
+   */
+  buildYawProfile() {
+    const c = this.cfg;
+    const pts = this.points;
+    const n = pts.length;
+    this.yaws = null;
+    // 進行方向を向くモード以外は経路に依らないので表は要らない
+    if (c.yawMode !== 'along-path' || n < 2) return;
+
+    const maxRate = Math.max(0.1, (c.maxYawRate ?? 90) * Math.PI / 180);   // [rad/s]
+
+    // 1) 各点の「向きたい方位」を連続化して並べる。
+    //    ±π をまたぐ跳びを取り除いておかないと、平滑化が壊れる。
+    const want = new Array(n);
+    let prev = null;
+    for (let i = 0; i < n; i++) {
+      const a = pts[Math.max(0, i - 1)], b = pts[Math.min(n - 1, i + 1)];
+      const dx = b.x - a.x, dz = b.z - a.z;
+      let y = (Math.abs(dx) < 1e-9 && Math.abs(dz) < 1e-9)
+        ? (prev ?? c.yaw) : Math.atan2(-dx, -dz);
+      if (prev !== null) y = prev + wrapPi(y - prev);    // 連続化 (unwrap)
+      want[i] = y;
+      prev = y;
+    }
+
+    // 2) 変化率が上限に収まるまで、対称な平滑化 (1/4, 1/2, 1/4) をくり返す。
+    //    前向き/後ろ向きの速度制限と違い、方位は「行き過ぎて戻る」と機体が
+    //    振られるので、左右対称にならす。対称なので角の手前から向き始め、
+    //    角を過ぎてから向き終わる (人が操縦するときと同じ動き)。
+    const yaw = want.slice();
+    const dt = (i) => Math.max(1e-3, this.times[i + 1] - this.times[i]);
+    const maxSlope = () => {
+      let m = 0;
+      for (let i = 0; i + 1 < n; i++) m = Math.max(m, Math.abs(yaw[i + 1] - yaw[i]) / dt(i));
+      return m;
+    };
+    const tmp = new Array(n);
+    for (let pass = 0; pass < 400 && maxSlope() > maxRate; pass++) {
+      tmp[0] = yaw[0]; tmp[n - 1] = yaw[n - 1];
+      for (let i = 1; i + 1 < n; i++) tmp[i] = 0.25 * yaw[i - 1] + 0.5 * yaw[i] + 0.25 * yaw[i + 1];
+      for (let i = 0; i < n; i++) yaw[i] = tmp[i];
+    }
+    this.yaws = yaw;
+  }
+
+  /** 時刻 tt [s] における経路上の位置・速度 (0 ≤ tt ≤ duration) */
+  stateAtTime(tt) {
+    const times = this.times, pts = this.points, v = this.speeds;
+    const n = pts.length;
+    if (n < 2) return { position: pts[0], tangent: v3(0, 0, 1), speed: 0, index: 0, u: 0 };
+    // 二分探索で区間を求める
+    let lo = 0, hi = n - 1;
+    while (lo + 1 < hi) {
+      const mid = (lo + hi) >> 1;
+      if (times[mid] <= tt) lo = mid; else hi = mid;
+    }
+    const i = clamp(lo, 0, n - 2);
+    const dt = times[i + 1] - times[i];
+    const u = dt > 1e-9 ? clamp((tt - times[i]) / dt, 0, 1) : 0;
+    const a = pts[i], b = pts[i + 1];
+    // ヨーは ±π をまたぐので、差を wrapPi してから補間する
+    const yw = this.yaws
+      ? wrapPi(this.yaws[i] + wrapPi(this.yaws[i + 1] - this.yaws[i]) * u)
+      : null;
+    return {
+      position: v3(lerp(a.x, b.x, u), lerp(a.y, b.y, u), lerp(a.z, b.z, u)),
+      tangent: vnorm(vsub(b, a)),
+      speed: lerp(v[i], v[i + 1], u),
+      yaw: yw,
+      index: i,
+      u,
+    };
   }
 
   /** 部屋の内側に安全マージンを取った範囲 */
@@ -213,37 +376,63 @@ export class Trajectory {
    * 時刻 t における目標を返す。
    * @returns {{position, velocity, acceleration, yaw, progress}}
    */
+  /** 外部時刻 t [s] を、経路上の時刻 tt (0..duration) へ写す */
+  pathTime(t) {
+    const T = this.duration;
+    if (T < 1e-9) return 0;
+    if (this.cfg.loop) return ((t % T) + T) % T;
+    // 折り返し (往復)。端点では速度プロファイルが 0 なので、
+    // 向きが変わっても位置は滑らかにつながる。
+    const cycle = T * 2;
+    const d = ((t % cycle) + cycle) % cycle;
+    return d <= T ? d : cycle - d;
+  }
+
+  /** 外部時刻 t における経路上の位置 */
+  positionAt(t) {
+    return this.stateAtTime(this.pathTime(t)).position;
+  }
+
   sample(t) {
-    const c = this.cfg;
-    if (this.points.length === 1 || this.total < 1e-6) {
+    if (this.points.length === 1 || this.total < 1e-6 || this.duration < 1e-9) {
       const p = this.points[0];
       return {
         position: p, velocity: v3(0, 0, 0), acceleration: v3(0, 0, 0),
         yaw: this.yawFor(t, p, v3(0, 0, 0)), progress: 0,
       };
     }
-    const speed = c.speed;
-    let dist = speed * t;
-    let progress = dist / this.total;
-    if (c.loop) {
-      dist = ((dist % this.total) + this.total) % this.total;
-    } else {
-      // 往復
-      const cycle = this.total * 2;
-      let d = ((dist % cycle) + cycle) % cycle;
-      dist = d <= this.total ? d : cycle - d;
-    }
-    const { position, tangent } = this.pointAt(dist);
-    // 速度ベクトルは接線 × 速度 (端点で減速する台形プロファイル)
-    const ramp = c.loop ? 1 : smoothEnds(dist / this.total, 0.08);
-    const velocity = vmul(tangent, speed * ramp);
-    // 加速度は数値微分
-    const ahead = this.pointAt(clamp(dist + 0.05, 0, this.total));
-    const acceleration = vmul(vsub(ahead.tangent, tangent), (speed * speed) / 0.05 * 0.5);
+    const tt = this.pathTime(t);
+    const s0 = this.stateAtTime(tt);
+
+    // 速度・加速度は位置の中心差分で求める。
+    // 区間ごとの接線をそのまま使うと、折れ線の頂点で向きが不連続に跳び、
+    // フィードフォワードとして与えたときに機体が振られる。
+    const c = this.cfg;
+    const h = Math.max(0.02, Math.min(0.15, this.duration * 0.01));
+    const velocity = vmul(vsub(this.positionAt(t + h), this.positionAt(t - h)), 1 / (2 * h));
+
+    // 加速度は二階差分なので、経路を折れ線で持っている以上どうしても
+    // 頂点で突起が出る (二階差分の誤差は窓幅の 2 乗に反比例する)。
+    // 窓を広めに取り、さらに計画した上限で頭打ちにする。加速度指令は
+    // そのまま傾き指令になるので、突起を通すと機体が振られて破綻する。
+    const ha = Math.max(0.12, Math.min(0.4, this.duration * 0.02));
+    const am = this.positionAt(t - ha), ap = this.positionAt(t + ha);
+    let acceleration = v3(
+      (ap.x - 2 * s0.position.x + am.x) / (ha * ha),
+      (ap.y - 2 * s0.position.y + am.y) / (ha * ha),
+      (ap.z - 2 * s0.position.z + am.z) / (ha * ha),
+    );
+    const aMax = Math.hypot(c.maxLateralAccel ?? 1.5, c.maxTangentialAccel ?? 1.0) * 1.2;
+    const aLen = vlen(acceleration);
+    if (aLen > aMax) acceleration = vmul(acceleration, aMax / aLen);
+
     return {
-      position, velocity, acceleration,
-      yaw: this.yawFor(t, position, velocity),
-      progress: clamp(progress, 0, 1e9),
+      position: s0.position,
+      velocity,
+      acceleration,
+      // 進行方向を向くモードは、変化率を制限した表を使う (buildYawProfile)
+      yaw: s0.yaw != null ? s0.yaw : this.yawFor(t, s0.position, velocity),
+      progress: clamp(tt / this.duration, 0, 1),
     };
   }
 
@@ -360,6 +549,23 @@ export const TRAJECTORY_DEFAULTS = {
   minAltitude: 0.4,
   maxAltitude: 2.2,
   margin: 0.9,
+  // 追従できる速度に落とすための加速度の上限 (buildSpeedProfile を参照)。
+  //
+  // マルチコプタの横加速度は傾き角で決まる (a = g tanθ) ので、原理的には
+  // 4 m/s² (22°) 程度まで出せる。しかし位置制御は姿勢ループを介するため
+  // 遅れがあり、上限いっぱいで角を回ると追従が破綻して壁や家具に当たる。
+  // 実測 (研究用 250mm・往復スキャンと壁沿い、4 条件):
+  //   4.0 m/s² / 90°/s : 3/4 が墜落、平均誤差 2.11m
+  //   2.0 m/s² / 50°/s : 1/4 が墜落、平均誤差 0.14m
+  //   1.5 m/s² / 40°/s : 0/4          平均誤差 0.10m  ← 既定値
+  // 速く飛ばしたい場合は上げられるが、追従誤差が増えるぶん障害物との
+  // 余裕 (clearance) も広げること。
+  maxLateralAccel: 1.5,
+  maxTangentialAccel: 1.0,
+  // 機首を振る速さの上限 [deg/s] (buildYawProfile を参照)。
+  // 往復スキャンの折り返しでは方位が 180° 反転するので、ここを絞らないと
+  // 制御が追いつかず、ロール/ピッチと干渉して機体が転倒する。
+  maxYawRate: 40,
   // 障害物を避けて経路を引き直すか (core/pathPlanner.js)
   avoidObstacles: true,
   // 占有格子の刻み [m]。細かいほど扉のような狭い開口を通れるが、
@@ -370,7 +576,8 @@ export const TRAJECTORY_DEFAULTS = {
   // (0.35 - 0.17 ≒ 0.18m)。機体半径 (研究用 250mm で 0.15m 程度) より
   // 大きくなるように選ぶこと。
   clearance: 0.35,
-  cornerRadius: 0.8,      // 角を丸める最大半径 [m]
+  // 角を丸める最大半径 [m]。大きいほど曲率が緩み、速度を落とさずに回れる。
+  cornerRadius: 1.2,
   rows: 5,
   turns: 2,
   radius: 1.5,

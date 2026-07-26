@@ -430,6 +430,18 @@ export function createGui(app, container) {
   // 切ると素の幾何パターンのままになる (家具を突き抜ける)。
   fFlight.add(app.sim.trajectory.cfg, 'avoidObstacles').name('障害物を避ける (経路計画)')
     .onChange(() => app.applyTrajectory());
+  // 追従できる速度・方位に落とすための上限 (trajectory.buildSpeedProfile /
+  // buildYawProfile)。上げるほど速いが、追従誤差が増えて障害物に触れやすい。
+  const fDyn = fFlight.addFolder('追従の限界 (角での減速)');
+  fDyn.close();
+  fDyn.add(app.sim.trajectory.cfg, 'maxLateralAccel', 0.3, 6, 0.1)
+    .name('横加速度の上限 [m/s²]').onChange(() => app.applyTrajectory());
+  fDyn.add(app.sim.trajectory.cfg, 'maxTangentialAccel', 0.2, 4, 0.1)
+    .name('加減速の上限 [m/s²]').onChange(() => app.applyTrajectory());
+  fDyn.add(app.sim.trajectory.cfg, 'maxYawRate', 10, 180, 5)
+    .name('機首を振る速さ [deg/s]').onChange(() => app.applyTrajectory());
+  fDyn.add(app.sim.trajectory.cfg, 'cornerRadius', 0.2, 3, 0.1)
+    .name('角の丸め半径 [m]').onChange(() => app.applyTrajectory());
 
   const fTraj = fFlight.addFolder('自動飛行の軌道');
   const patternLabels = {
