@@ -68,6 +68,63 @@ export function roomWalls(x0, z0, x1, z1, opts = {}) {
 export const room = (name, x0, z0, x1, z1, kind = 'generic', opts = {}) =>
   ({ name, x0, z0, x1, z1, kind, density: opts.density ?? 1, ...opts });
 
+/* ------------------------------------------------------------------ */
+/* 床の白線 (体育館のコートなど)                                        */
+/* ------------------------------------------------------------------ */
+//
+// 床に描く線。見た目だけでなく、自己位置推定にとっては「床にしか無い
+// 幾何的な特徴」になるので、視覚 SLAM の評価に効く。
+
+/** 直線 */
+export const line = (x1, z1, x2, z2, w = 0.05) => ({ kind: 'line', x1, z1, x2, z2, w });
+/** 円 */
+export const circle = (x, z, r, w = 0.05) => ({ kind: 'arc', x, z, r, a0: 0, a1: Math.PI * 2, w });
+/** 円弧 (a0 → a1 [rad]) */
+export const arc = (x, z, r, a0, a1, w = 0.05) => ({ kind: 'arc', x, z, r, a0, a1, w });
+
+/** 矩形 (4 本の直線) */
+export const rectLines = (x0, z0, x1, z1, w = 0.05) => [
+  line(x0, z0, x1, z0, w), line(x1, z0, x1, z1, w),
+  line(x1, z1, x0, z1, w), line(x0, z1, x0, z0, w),
+];
+
+/**
+ * バスケットボールのコート 1 面ぶんの白線。
+ *
+ * 公式寸法 (FIBA): 28 x 15 m、センターサークル半径 1.8 m、
+ * 制限区域 5.8 x 4.9 m、フリースローライン 5.8 m、3 ポイント 6.75 m
+ * (サイドラインから 0.9 m の直線部を持つ)。
+ * コートの長手は X 方向、中心は (cx, cz)。
+ */
+export function basketCourt(cx, cz) {
+  const L = 28, W = 15;
+  const out = [...rectLines(cx - L / 2, cz - W / 2, cx + L / 2, cz + W / 2)];
+  out.push(line(cx, cz - W / 2, cx, cz + W / 2));   // センターライン
+  out.push(circle(cx, cz, 1.8));                    // センターサークル
+
+  for (const s of [-1, 1]) {                        // 両エンド
+    const end = cx + s * L / 2;
+    const ft = end - s * 5.8;                       // フリースローライン
+    const hoop = end - s * 1.575;                   // リングの中心
+    // 制限区域 (キー)
+    out.push(line(end, cz - 2.45, ft, cz - 2.45));
+    out.push(line(end, cz + 2.45, ft, cz + 2.45));
+    out.push(line(ft, cz - 2.45, ft, cz + 2.45));
+    out.push(circle(ft, cz, 1.8));                  // フリースローサークル
+    // 3 ポイントライン: サイドラインから 0.9m の直線 + 半径 6.75m の円弧
+    const zEdge = W / 2 - 0.9;                      // 直線部の z
+    const th = Math.asin(zEdge / 6.75);             // 円弧が直線に接する角
+    const xTan = hoop - s * 6.75 * Math.cos(th);
+    for (const sz of [-1, 1]) {
+      out.push(line(end, cz + sz * zEdge, xTan, cz + sz * zEdge));
+    }
+    // 円弧 (エンドライン側から見て内側へ膨らむ)
+    const base = s > 0 ? 0 : Math.PI;
+    out.push(arc(hoop, cz, 6.75, base - (s > 0 ? th : -th), base + (s > 0 ? th : -th)));
+  }
+  return out;
+}
+
 /** 点検対象 (工場などの設備。視覚的なランドマークにもなる) */
 export const target = (name, x, y, z, kind = 'gauge', opts = {}) =>
   ({ name, x, y, z, kind, yaw: opts.yaw ?? 0, ...opts });
@@ -583,8 +640,144 @@ function officeBuilding() {
   };
 }
 
+/**
+ * 体育館 (バスケットコート 2 面・高天井)。
+ *
+ * 日本の学校・公共施設によくある「2 面取れるアリーナ」。
+ * 34 x 36 m・天井高 12 m の一室空間に、コート 2 面ぶんの白線を引き、
+ * 高さ 5 m にギャラリー (回廊) を回してある。
+ *
+ * この環境が効くところ:
+ *   - **広くて特徴の乏しい空間** — 壁が遠く、床の白線とゴールくらいしか
+ *     手掛かりが無い。視覚 SLAM がスケールを見失いやすい条件を作れる。
+ *   - **高い天井** — 高度方向に大きく動ける。気圧計・ToF の評価に。
+ *   - **ギャラリー** — 上下 2 層の飛行と、俯瞰からの観測が試せる。
+ */
+function gymBuilding() {
+  const W = 34, D = 36, H = 12;          // アリーナ (天井高 12m)
+  const x0 = -W / 2, z0 = -D / 2, x1 = W / 2, z1 = D / 2;
+  const galleryY = 5.0;                  // ギャラリー (回廊) の高さ
+  const galleryW = 2.2;                  // 回廊の幅
+  const courtZ = 8.0;                    // 2 面のコート中心 (z = ±8)
+  const stage = { x0: x0 + 6, z0: z1 - 4.5, x1: x1 - 6, z1, h: 0.9 };
+
+  // 1F 外周。高い位置に明かり取りの窓を並べる (体育館らしい採光)。
+  const highWin = (n, len) => {
+    const o = [];
+    for (let i = 0; i < n; i++) o.push(win(len * (i + 0.5) / n, 3.2, 2.4, 6.4));
+    return o;
+  };
+  const f1Walls = [
+    wall(x0, z0, x1, z0, { t: 0.3, o: [...highWin(4, W), pass(W / 2 - 2.4, 2.4, 2.4)] }),
+    wall(x1, z0, x1, z1, { t: 0.3, o: highWin(4, D) }),
+    wall(x1, z1, x0, z1, { t: 0.3, o: highWin(4, W) }),
+    wall(x0, z1, x0, z0, { t: 0.3, o: [...highWin(4, D), door(D - 3, 1.6, 2.2)] }),
+    // 器具庫 (南西の一角)
+    wall(x0 + 6, z0, x0 + 6, z0 + 5, { t: 0.15, h: 3.0, o: [door(2.5, 1.6, 2.2)] }),
+    wall(x0, z0 + 5, x0 + 6, z0 + 5, { t: 0.15, h: 3.0 }),
+  ];
+
+  // 2F ギャラリー: 内側に手すり (腰壁)
+  const gi = { x0: x0 + galleryW, z0: z0 + galleryW, x1: x1 - galleryW, z1: z1 - galleryW };
+  const f2Walls = [
+    wall(gi.x0, gi.z0, gi.x1, gi.z0, { t: 0.06, h: 1.1 }),
+    wall(gi.x1, gi.z0, gi.x1, gi.z1, { t: 0.06, h: 1.1 }),
+    wall(gi.x1, gi.z1, gi.x0, gi.z1, { t: 0.06, h: 1.1 }),
+    wall(gi.x0, gi.z1, gi.x0, gi.z0, { t: 0.06, h: 1.1 }),
+  ];
+
+  // バスケットゴール 4 基 (コート 2 面 x 両エンド)。リング中心は床から 3.05m。
+  const goals = [];
+  for (const cz of [-courtZ, courtZ]) {
+    for (const s of [-1, 1]) {
+      // yaw はコート中央 (x=0) を向く向き。ローカル +z がリング側。
+      goals.push(target(`ゴール ${cz < 0 ? 'A' : 'B'}${s < 0 ? '西' : '東'}`,
+        s * (14 - 1.575), 3.05, cz, 'hoop',
+        { yaw: s > 0 ? -Math.PI / 2 : Math.PI / 2, arm: W / 2 - (14 - 1.575) - 0.2 }));
+    }
+  }
+
+  return {
+    name: '体育館 (バスケットコート 2 面・高天井)',
+    description: '34 x 36 m・天井高 12 m のアリーナにコート 2 面ぶんの白線とゴール 4 基。'
+      + '高さ 5 m のギャラリー (回廊) が周囲を巡る。壁が遠く手掛かりの乏しい'
+      + '広い空間なので、視覚 SLAM がスケールを見失う条件の評価に向く。',
+    size: { width: W, depth: D, height: H },
+    spawn: { x: 0, z: z0 + 2.0 },          // 正面入口の内側
+    floors: [
+      {
+        name: '1F アリーナ', elevation: 0, height: H,
+        outline: { x0, z0, x1, z1 },
+        walls: f1Walls,
+        rooms: [
+          // 広いので 2 面ぶんに分けて灯具を配る (lights で灯数を指定)
+          room('アリーナ (A コート)', x0 + 0.5, z0 + 0.5, x1 - 0.5, -0.5, 'gym',
+            { density: 0.12, lights: 6 }),
+          room('アリーナ (B コート)', x0 + 0.5, 0.5, x1 - 0.5, z1 - 5.0, 'gym',
+            { density: 0.12, lights: 6 }),
+          room('器具庫', x0 + 0.4, z0 + 0.4, x0 + 5.6, z0 + 4.6, 'storage', { density: 1.2 }),
+        ],
+        voids: [],
+        stairs: [{ x: x0 + 1.1, z: z1 - 8, width: 1.2, dir: -1, rise: galleryY }],
+        markings: [...basketCourt(0, -courtZ), ...basketCourt(0, courtZ)],
+        equipment: {
+          // ステージ (舞台) と、天井の鉄骨トラス
+          platforms: [stage],
+          trusses: { y: H - 1.1, count: 5, axis: 'x' },
+        },
+      },
+      {
+        name: '2F ギャラリー', elevation: galleryY, height: H - galleryY,
+        outline: { x0, z0, x1, z1 },
+        walls: f2Walls,
+        rooms: [],
+        voids: [gi],                      // 中央はアリーナの吹抜
+        stairs: [],
+        noCeiling: true,                  // 屋根は 1F 側で張る
+      },
+    ],
+    targets: goals,
+    routes: {
+      // アリーナを低空で一周 → ギャラリーへ上がってもう一周
+      patrol: [
+        P(0, 1.6, z0 + 4, 0), P(x1 - 4, 1.6, z0 + 4, 0),
+        P(x1 - 4, 1.6, z1 - 6, 0), P(x0 + 4, 1.6, z1 - 6, 0),
+        P(x0 + 4, galleryY + 1.4, z1 - 6, 0), P(x1 - 4, galleryY + 1.4, z1 - 6, 0),
+        P(x1 - 4, galleryY + 1.4, z0 + 4, 0), P(x0 + 4, galleryY + 1.4, z0 + 4, 0),
+        P(0, galleryY + 1.4, z0 + 4, 0), P(0, 1.6, z0 + 4, 0),
+      ],
+      // 4 基のゴールを順に正面から見る (高さ 3m のランドマーク)
+      goals: [
+        P(0, 3.2, -courtZ, 0),
+        P(14 - 4.5, 3.2, -courtZ, 0), P(0, 3.2, -courtZ, 0),
+        P(-(14 - 4.5), 3.2, -courtZ, 0), P(0, 3.2, 0, 0),
+        P(0, 3.2, courtZ, 0),
+        P(14 - 4.5, 3.2, courtZ, 0), P(0, 3.2, courtZ, 0),
+        P(-(14 - 4.5), 3.2, courtZ, 0), P(0, 3.2, 0, 0),
+      ],
+      // 天井付近をなめるように飛ぶ (高度方向の評価用)
+      ceiling: [
+        P(x0 + 5, H - 2.2, z0 + 5, 0), P(x1 - 5, H - 2.2, z0 + 5, 0),
+        P(x1 - 5, H - 2.2, z1 - 5, 0), P(x0 + 5, H - 2.2, z1 - 5, 0),
+        P(x0 + 5, 1.6, z1 - 6, 0),
+      ],
+    },
+    materials: {
+      floor: { kind: 'wood', color: '#d2a464', repeat: 14, roughness: 0.28 },
+      corridorFloor: { kind: 'wood', color: '#d2a464', repeat: 14, roughness: 0.28 },
+      wall: { kind: 'paint', color: '#e3e6e2', repeat: 8, roughness: 0.75 },
+      ceiling: { kind: 'plain', color: '#8d939a', repeat: 8, roughness: 0.9 },
+      exterior: { kind: 'plain', color: '#9aa1a8', repeat: 8, roughness: 0.85 },
+      marking: { color: '#f4f6f8' },
+    },
+    lighting: 'highbay',
+    lightsPerFloor: { rows: 2, cols: 5 },
+  };
+}
+
 export const BUILDING_PRESETS = {
   school: schoolBuilding(),
+  gym: gymBuilding(),
   community: communityBuilding(),
   factory: factoryBuilding(),
   office: officeBuilding(),
@@ -602,5 +795,6 @@ export const ROOM_FURNITURE = {
   kitchen: ['cabinet', 'table', 'shelf'],
   storage: ['box', 'crate', 'shelf', 'pallet'],
   factory: ['machine', 'crate', 'pallet', 'shelf', 'box'],
+  gym: ['bench', 'box', 'crate'],
   generic: ['box', 'shelf', 'chair'],
 };

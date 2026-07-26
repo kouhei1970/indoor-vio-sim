@@ -180,7 +180,7 @@ try {
   check(report.shapes.length >= 35, 'パーツ形状', `${report.shapes.length} 通り`);
   check(report.layouts.length === 9, 'ロータ配置', `${report.layouts.length} 種`);
   check(report.rooms.length === 7, '部屋プリセット', `${report.rooms.length} 種`);
-  check(report.buildings.length === 4, '建物プリセット',
+  check(report.buildings.length === 5, '建物プリセット',
     report.buildings.map((b) => `${b.key}(${b.floors}層)`).join(' '));
   // 静的メッシュはマテリアルごとに統合するので、mesh 数は間取りの規模ではなく
   // 使っているマテリアルの数で決まる。ここでは「生成されているか」だけを見る。

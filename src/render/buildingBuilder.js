@@ -75,6 +75,12 @@ function makeShape(outline, holes) {
   return shape;
 }
 
+/** 天井に開ける穴 (真上に載る階の吹抜と一致させる) */
+function ceilVoids(floor, above, stacked) {
+  void floor;
+  return stacked ? (above.voids || []) : [];
+}
+
 /** 点 (x,z) から線分 a-b までの距離 (XZ 平面) */
 function distToSegXZ(x, z, a, b) {
   const dx = b.x - a.x, dz = b.z - a.z;
@@ -101,6 +107,8 @@ export class BuildingBuilder {
     // (学校: 全灯 56fps → 16 灯 236fps / 8 灯まで削ると廊下の奥が暗くなる)。
     this.lightBudget = 16;
     this.floorInfo = [];
+    // 階ごとの「見えている天井面」の高さ (灯具はこのすぐ下へ吊る)
+    this.ceilingY = [];
     this.targets = [];
     // 統合対象の開始位置 (group.children のインデックス)
     this.staticFrom = 0;
@@ -198,6 +206,7 @@ export class BuildingBuilder {
     this.lights.length = 0;
     this.pointLamps.length = 0;
     this.floorInfo.length = 0;
+    this.ceilingY.length = 0;
     this.targets.length = 0;
     this.staticFrom = 0;
     this.floorGroups.length = 0;
@@ -228,6 +237,8 @@ export class BuildingBuilder {
       wall: texturedMaterial(preset.materials.wall, { x: 4, y: 2 }, detail),
       ceiling: texturedMaterial(preset.materials.ceiling, { x: size.width / 3, y: size.depth / 3 }, detail),
       exterior: texturedMaterial(preset.materials.exterior || preset.materials.wall, { x: 6, y: 3 }, detail),
+      // 床の白線 (体育館のコートなど)
+      marking: pbr({ color: preset.materials.marking?.color ?? 0xf4f6f8, roughness: 0.5 }),
     };
     this.materials = mats;
 
@@ -285,37 +296,52 @@ export class BuildingBuilder {
         (cell.x1 - cell.x0) / 2, slabT / 2, (cell.z1 - cell.z0) / 2, 0, 'slab');
     }
 
-    // --- 天井 (最上階は屋根、noCeiling の階は省く) ---
+    // --- 天井 ---
     //
-    // 天井の穴はこの階の吹抜ではなく「真上に載る階のスラブの穴」と一致させる。
-    // 自分の voids を使うと、階段室の吹抜が上階のスラブにしか開かず、
-    // その下の天井で塞がって上階へ上がれなくなる。
+    // 天井板は「その階の上限」から下へ 6cm 吊る。上限は
+    //   真上に階が載っている  … 上階の床スラブの裏側 (elevation_上 - スラブ厚)
+    //   載っていない (最上階)  … elevation + height
+    // で決まる。上階のスラブは elevation から下へ伸びているので、その分を
+    // 引かないと天井板がスラブに食い込み、灯具までスラブの中に埋まって
+    // 天井が真っ黒になる。
+    //
+    // つまり階高 (elevation の間隔) = スラブ厚 + 天井板 + 天井高。
+    // 学校なら 3.5m = 0.22 + 0.06 + 3.22m。
+    //
+    // 天井の穴は「真上に載る階のスラブの穴」と一致させる (自分の吹抜では
+    // ない)。そうしないと階段室の吹抜が上階のスラブにしか開かず、その下の
+    // 天井で塞がって上階へ上がれなくなる。
     const idx = this.preset.floors.indexOf(floor);
     const above = this.preset.floors[idx + 1];
     const isTop = !above;
     // 真上に載っている階か (工場のように途中の高さに床がある場合は載っていない)
     const stacked = above && Math.abs(above.elevation - (elevation + height)) < 0.05;
-    const ceilVoids = stacked ? (above.voids || []) : [];
+    const ceilT = 0.06;
+    const ceilTop = stacked
+      ? above.elevation - (above.slabThickness ?? 0.22)   // 上階スラブの裏
+      : elevation + height;
+    // 見えている天井面の高さ。灯具はこの面のすぐ下へ吊る (buildLighting)。
+    let ceilingY = ceilTop;
     if (!floor.noCeiling) {
-      const ceilShape = makeShape(outline, ceilVoids);
-      const ceilT = 0.06;
-      const ceilGeo = new THREE.ExtrudeGeometry(ceilShape, { depth: ceilT, bevelEnabled: false });
+      const holes = stacked ? (above.voids || []) : [];
+      const ceilGeo = new THREE.ExtrudeGeometry(makeShape(outline, holes),
+        { depth: ceilT, bevelEnabled: false });
       ceilGeo.rotateX(-PI / 2);
-      // 床スラブと同じ理由で下へ吊る。上へ伸ばすと、真上の階の床の上に
-      // 天井が 6cm 突き出し、上階に着地した機体が浮いてしまう。
-      ceilGeo.translate(0, -ceilT, 0);
+      ceilGeo.translate(0, -ceilT, 0);      // 天井面から下へ吊る
       const ceil = new THREE.Mesh(ceilGeo, isTop ? mats.exterior : mats.ceiling);
       ceil.name = `ceiling-${floor.name}`;
-      ceil.position.y = elevation + height;
+      ceil.position.y = ceilTop;
       ceil.receiveShadow = true;
       if (floorIndex != null) this.floorGroup(floorIndex).add(ceil);
       else this.group.add(ceil);
-      for (const cell of rectMinusHoles(outline, ceilVoids)) {
-        // 天井の下面 (= 見えている面) を elevation + height に合わせる
-        this.addBox((cell.x0 + cell.x1) / 2, elevation + height - ceilT / 2, (cell.z0 + cell.z1) / 2,
+      ceilingY = ceilTop - ceilT;
+      for (const cell of rectMinusHoles(outline, holes)) {
+        // 天井の下面 (= 見えている面) に当たり判定を合わせる
+        this.addBox((cell.x0 + cell.x1) / 2, ceilTop - ceilT / 2, (cell.z0 + cell.z1) / 2,
           (cell.x1 - cell.x0) / 2, ceilT / 2, (cell.z1 - cell.z0) / 2, 0, 'ceiling');
       }
     }
+    if (floorIndex != null) this.ceilingY[floorIndex] = ceilingY;
 
     // ここから先 (壁・階段・家具・掲示物) は動かないので、階ごとに統合する。
     // スラブと天井は 1 枚ずつなので対象外 (天井は名前で隠せるようにも残す)。
@@ -337,6 +363,9 @@ export class BuildingBuilder {
     }
 
     // --- 壁面の掲示物・マーカー (特徴点を増やす) ---
+    // --- 床の白線 (体育館のコートなど) ---
+    this.buildMarkings(floor, mats);
+
     this.decorateFloor(floor, rng, env, detail);
 
     this.flushStatic(`floor-${floor.name}`, floorIndex);
@@ -457,6 +486,39 @@ export class BuildingBuilder {
     }
   }
 
+  /**
+   * 床の白線 (体育館のコートなど)。
+   *
+   * 見た目だけでなく、自己位置推定にとっては「床にしか無い幾何的な特徴」に
+   * なる。広くて壁が遠い空間では、床の線が数少ない手掛かりになる。
+   */
+  buildMarkings(floor, mats) {
+    const marks = floor.markings || [];
+    if (!marks.length) return;
+    const y = floor.elevation + 0.006;      // 床から少し浮かせて z ファイティングを避ける
+    const seg = (x1, z1, x2, z2, w) => {
+      const len = Math.hypot(x2 - x1, z2 - z1);
+      if (len < 1e-4) return;
+      const m = new THREE.Mesh(new THREE.BoxGeometry(len, 0.006, w), mats.marking);
+      m.position.set((x1 + x2) / 2, y, (z1 + z2) / 2);
+      m.rotation.y = -Math.atan2(z2 - z1, x2 - x1);
+      m.receiveShadow = true;
+      this.group.add(m);
+    };
+    for (const k of marks) {
+      if (k.kind === 'line') { seg(k.x1, k.z1, k.x2, k.z2, k.w); continue; }
+      // 円・円弧は短い直線でつなぐ (半径 1m あたり 12 分割ほど)
+      const a0 = k.a0 ?? 0, a1 = k.a1 ?? PI * 2;
+      const n = Math.max(8, Math.round(Math.abs(a1 - a0) * k.r * 2.5));
+      for (let i = 0; i < n; i++) {
+        const t0 = a0 + ((a1 - a0) * i) / n;
+        const t1 = a0 + ((a1 - a0) * (i + 1)) / n;
+        seg(k.x + Math.cos(t0) * k.r, k.z + Math.sin(t0) * k.r,
+          k.x + Math.cos(t1) * k.r, k.z + Math.sin(t1) * k.r, k.w);
+      }
+    }
+  }
+
   /** 掲示物・フィデューシャルマーカー (階ごと) */
   decorateFloor(floor, rng, env, detail) {
     void detail;
@@ -537,6 +599,39 @@ export class BuildingBuilder {
         this.world.addBox(v3(t.x, t.h / 2, t.z), v3(t.r, t.h / 2, t.r), 0, 'tank');
       }
 
+      // ステージ・舞台などの台 (床から h の高さの平らな面)
+      for (const pf of eq.platforms || []) {
+        const w = pf.x1 - pf.x0, d = pf.z1 - pf.z0;
+        const cx = (pf.x0 + pf.x1) / 2, cz = (pf.z0 + pf.z1) / 2;
+        const body = new THREE.Mesh(new THREE.BoxGeometry(w, pf.h, d),
+          pbr({ color: pf.color ?? 0xb08d5c, roughness: 0.45 }));
+        body.position.set(cx, floor.elevation + pf.h / 2, cz);
+        body.castShadow = true; body.receiveShadow = true;
+        this.group.add(body);
+        this.addBox(cx, floor.elevation + pf.h / 2, cz, w / 2, pf.h / 2, d / 2, 0, 'platform');
+      }
+
+      // 天井の鉄骨トラス (体育館・工場の屋根)
+      if (eq.trusses) {
+        const t = eq.trusses;
+        const steelDark = pbr({ color: 0x6f767d, roughness: 0.5, metalness: 0.6 });
+        const { x0, x1, z0, z1 } = floor.outline;
+        const n = Math.max(2, t.count ?? 4);
+        for (let i = 0; i < n; i++) {
+          const u = (i + 0.5) / n;
+          const along = (t.axis ?? 'x') === 'x';
+          const len = along ? x1 - x0 - 0.6 : z1 - z0 - 0.6;
+          const beam = new THREE.Mesh(new THREE.BoxGeometry(along ? len : 0.28, 0.36,
+            along ? 0.28 : len), steelDark);
+          const cx = along ? (x0 + x1) / 2 : x0 + (x1 - x0) * u;
+          const cz = along ? z0 + (z1 - z0) * u : (z0 + z1) / 2;
+          beam.position.set(cx, t.y, cz);
+          beam.castShadow = true;
+          this.group.add(beam);
+          this.addBox(cx, t.y, cz, (along ? len : 0.28) / 2, 0.18, (along ? 0.28 : len) / 2, 0, 'truss');
+        }
+      }
+
       if (eq.craneRail) {
         const rail = pbr({ color: 0xf0a02a, roughness: 0.5, metalness: 0.6 });
         const { x0, x1, z0, z1 } = floor.outline;
@@ -611,6 +706,48 @@ export class BuildingBuilder {
           }
           break;
         }
+        case 'hoop': {
+          // バスケットゴール: バックボード + リング + 支柱
+          // 位置はリング中心 (床から 3.05m)、yaw はコート中央を向く向き。
+          const board = new THREE.Mesh(new THREE.BoxGeometry(1.8, 1.05, 0.04),
+            pbr({ color: 0xf2f5f8, roughness: 0.18 }));
+          board.position.set(0, 0.30, -0.16);
+          g.add(board);
+          // バックボードの四角枠 (視覚的な特徴になる)
+          const frameMat = pbr({ color: 0xd8452f, roughness: 0.4 });
+          for (const [w, h, y] of [[0.59, 0.02, 0.045], [0.59, 0.02, 0.495], [0.02, 0.45, 0.27]]) {
+            for (const sx of (w < 0.1 ? [-1, 1] : [0])) {
+              const bar = new THREE.Mesh(new THREE.BoxGeometry(w || 0.02, h, 0.012), frameMat);
+              bar.position.set(sx * 0.285, y - 0.02, -0.135);
+              g.add(bar);
+            }
+          }
+          const rim = new THREE.Mesh(new THREE.TorusGeometry(0.225, 0.012, 8, 24),
+            pbr({ color: 0xe2622a, roughness: 0.35, metalness: 0.5 }));
+          rim.rotation.x = PI / 2;
+          rim.position.set(0, 0, 0.10);
+          g.add(rim);
+          // ネット (円錐状の枠線)
+          const netMat = pbr({ color: 0xeceff2, roughness: 0.8 });
+          for (let i = 0; i < 8; i++) {
+            const a = (i / 8) * PI * 2;
+            const cord = new THREE.Mesh(new THREE.CylinderGeometry(0.005, 0.005, 0.4, 4), netMat);
+            cord.position.set(Math.cos(a) * 0.17, -0.19, 0.10 + Math.sin(a) * 0.17);
+            g.add(cord);
+          }
+          // 支持アーム (壁まで伸ばす。長さは target の arm で指定)
+          const armLen = t.arm ?? 1.2;
+          const armMat = pbr({ color: 0x6f767d, roughness: 0.5, metalness: 0.55 });
+          const arm = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.12, armLen), armMat);
+          arm.position.set(0, 0.42, -0.18 - armLen / 2);
+          g.add(arm);
+          // 斜めの筋交い
+          const brace = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.08, armLen * 0.9), armMat);
+          brace.position.set(0, 0.05, -0.18 - armLen * 0.45);
+          brace.rotation.x = -Math.atan2(0.74, armLen * 0.9);
+          g.add(brace);
+          break;
+        }
         case 'joint':
         default: {
           const body = new THREE.Mesh(new THREE.CylinderGeometry(0.16, 0.16, 0.12, 16), steel);
@@ -662,8 +799,12 @@ export class BuildingBuilder {
     // 区画 = 部屋 + 吹抜 (階段室・アトリウム) + 階段まわり。
     // 部屋の指定が無い階 (工場のキャットウォークなど) は外形を格子で割る。
     const allZones = [];
-    for (const floor of preset.floors) {
+    preset.floors.forEach((floor, fi) => {
       const { outline, elevation, height } = floor;
+      // 灯具は「見えている天井面」の 8cm 下に吊る。階高ではなく実際の天井
+      // (上階のスラブ裏 or 天井板) を基準にしないと、灯具がスラブに埋まって
+      // 天井が真っ黒になる。
+      const ceilY = (this.ceilingY[fi] ?? (elevation + height - 0.06)) - 0.08;
       const zones = [];
       for (const r of floor.rooms || []) zones.push({ x0: r.x0, z0: r.z0, x1: r.x1, z1: r.z1 });
       for (const v of floor.voids || []) zones.push({ x0: v.x0, z0: v.z0, x1: v.x1, z1: v.z1 });
@@ -685,9 +826,11 @@ export class BuildingBuilder {
         const w = zone.x1 - zone.x0, d = zone.z1 - zone.z0;
         // 細長い廊下は面積で数えると足りなくなるので、長手方向の長さでも見る
         const want = Math.max(Math.round(Math.max(w, d) / 7), Math.round((w * d) / 80), 1);
-        allZones.push({ ...zone, y: elevation + height - 0.08, w, d, want: Math.min(4, want) });
+        // room に lights を書いておけば灯数を明示できる (体育館のように広い室用)
+        const n = zone.lights != null ? zone.lights : Math.min(4, want);
+        allZones.push({ ...zone, y: ceilY, w, d, want: n });
       }
-    }
+    });
 
     // 灯数の上限。多いほど均一に照らせるが、描画コストが線形に増える。
     const MAX_LAMPS = 28;
@@ -725,13 +868,14 @@ export class BuildingBuilder {
     }
 
     // 影付きの光源は負荷が高いので、階に 1 灯だけ (建物全体で 4 灯まで)
-    for (const floor of preset.floors) {
-      if (env.shadows === false || shadowLights >= 4) break;
+    preset.floors.forEach((floor, fi) => {
+      if (env.shadows === false || shadowLights >= 4) return;
       const { outline, elevation, height } = floor;
+      const ceilY = (this.ceilingY[fi] ?? (elevation + height - 0.06)) - 0.08;
       const cx = (outline.x0 + outline.x1) / 2, cz = (outline.z0 + outline.z1) / 2;
       const spot = new THREE.SpotLight(new THREE.Color(cfg.ceilingLights.color),
         cfg.ceilingLights.power * scale * 1.6, height * 3, PI / 2.4, 0.6, 1.6);
-      spot.position.set(cx, elevation + height - 0.08, cz);
+      spot.position.set(cx, ceilY, cz);
       spot.target.position.set(cx, elevation, cz);
       spot.castShadow = true;
       spot.shadow.mapSize.width = env.shadowQuality ?? 2048;
@@ -744,7 +888,7 @@ export class BuildingBuilder {
       this.lightGroup.add(spot.target);
       this.lights.push({ light: spot, base: cfg.ceilingLights.power * scale * 1.6, flicker: cfg.flicker });
       shadowLights++;
-    }
+    });
 
     if (cfg.sun.enabled) {
       const el = cfg.sun.elevation * PI / 180;
