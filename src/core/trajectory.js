@@ -314,14 +314,23 @@ export class Trajectory {
         if (c.loop) {
           const first = pts[0];
           const last = pts[pts.length - 1];
-          // 走査域の外側へ出る量。安全範囲の内側に収まる範囲で取る。
-          const outZ = Math.min(c.returnOffset ?? 1.2, Math.max(0, (s.maxZ - s.minZ) * 0.25));
-          const zBack = clamp(last.z + (last.z >= first.z ? outZ : -outZ), s.minZ, s.maxZ);
-          const zHome = clamp(first.z + (first.z <= last.z ? -outZ : outZ), s.minZ, s.maxZ);
-          // 最終行の端 → 外へ出る → 始点側の x へ戻る → 始点の手前へ
-          pts.push(v3(last.x, alt, zBack));
-          pts.push(v3(first.x, alt, zBack));
-          pts.push(v3(first.x, alt, zHome));
+          // 復路は**走査域の外側**を回す。行は安全範囲いっぱいに引いてあるので、
+          // 安全範囲ではなく部屋の外形から測って、壁との間に残っている隙間を
+          // 使う (安全マージン 0.9m のうち、経路計画の余裕 clearance を除いた分)。
+          // ここを安全範囲でクランプすると、復路が最終行の上に重なって
+          // 「行きの経路をなぞって戻る」ように見えてしまう。
+          const b = this.bounds;
+          const pad = (c.clearance ?? 0.25) + 0.25;   // 追従誤差ぶんの余裕も見る
+          const off = c.returnOffset ?? 1.2;
+          const outer = (v, lo, hi, dir) => clamp(v + dir * off, lo + pad, hi - pad);
+          const zOut = outer(last.z, b.min.z, b.max.z, last.z >= first.z ? 1 : -1);
+          const zIn = outer(first.z, b.min.z, b.max.z, first.z <= last.z ? -1 : 1);
+          const xOut = outer(first.x, b.min.x, b.max.x, first.x <= last.x ? -1 : 1);
+          // 最終行の端 → 外へ出る → 走査域の外を回る → 始点へ入る
+          pts.push(v3(last.x, alt, zOut));
+          pts.push(v3(xOut, alt, zOut));
+          pts.push(v3(xOut, alt, zIn));
+          pts.push(v3(first.x, alt, zIn));
           pts.push(v3(first.x, alt, first.z));      // 周回を閉じる
         }
         return resample(pts, c.resolution);

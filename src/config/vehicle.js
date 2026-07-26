@@ -577,7 +577,10 @@ export const SIM_DEFAULTS = {
   integrator: 'rk4',       // 'rk4' | 'euler'
   timeScale: 1.0,
   seed: 20240101,
-  crashAccel: 150,         // [m/s^2] これを超える衝撃で墜落判定
+  // 墜落判定。ぶつかった速さで見る (加速度で見ると、接触ばねの硬さが質量に
+  // 依らないため軽い機体ほど不利になり、天井に 1m/s で触れただけで墜落に
+  // なっていた)。裏返って接地した場合も墜落とする。
+  crashSpeed: 3.0,         // [m/s] これを超える速さでぶつかると墜落判定
   textureQuality: 1.0,     // オプティカルフローの効き (床のテクスチャ量)
   useEstimatedState: false, // true にすると推定 (ノイズ入り) 状態で制御する
   estimator: { posNoise: 0.02, velNoise: 0.05, gyroNoise: 0.01 },

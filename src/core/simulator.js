@@ -282,6 +282,7 @@ export class Simulator {
     // --- 積分 ---
     const wrenchFn = (st) => this.computeWrench(st);
     const before = this.state;
+    const wasFree = (this.contactInfo?.contactCount ?? 0) === 0;   // 接触の立ち上がり検出用
     const integrator = this.sim.integrator === 'euler' ? semiImplicitEuler : rk4;
     this.state = integrator(before, dt, wrenchFn, this.massProps.mass, this.inertia, this.inertiaInv);
     this.accelWorld = vmul(vsub(this.state.v, before.v), 1 / Math.max(dt, 1e-9));
@@ -291,11 +292,28 @@ export class Simulator {
       this.sim.textureQuality ?? 1);
 
     // --- 破損判定 ---
-    const impact = vlen(vsub(this.state.v, before.v)) / Math.max(dt, 1e-9);
-    if (this.contactInfo.contactCount > 0 && impact > (this.sim.crashAccel ?? 120)) {
-      if (!this.crashed) {
+    //
+    // 「ぶつかった速さ」で見る。加速度で見ると、接触ばねの硬さが質量に依らない
+    // ため、軽い機体ほど同じ速さでも大きな加速度になる (a ≒ v√(k/m))。
+    // 35g の StampFly では、天井に 1.0m/s で触れただけで 260m/s² に達し、
+    // ただの接触が墜落と判定されていた。実機なら弾んで終わる場面である。
+    //
+    // 判定は 2 つ。
+    //   1. 接触した瞬間の速さが crashSpeed を超える (激突)
+    //   2. 裏返って接地している (ひっくり返って飛べない)
+    if (!this.crashed) {
+      const speed = vlen(before.v);
+      const limit = this.sim.crashSpeed ?? 3.0;
+      if (this.contactInfo.contactCount > 0 && wasFree && speed > limit) {
         this.crashed = true;
-        this.events.push({ t: this.time, type: 'crash', accel: impact });
+        this.events.push({ t: this.time, type: 'crash', speed });
+      } else if (this.contactInfo.contactCount > 0) {
+        // 機体上向き (機体座標の +Y) がワールドで下を向いていたら裏返り
+        const up = qrot(this.state.q, v3(0, 1, 0));
+        if (up.y < -0.2) {
+          this.crashed = true;
+          this.events.push({ t: this.time, type: 'crash', inverted: true });
+        }
       }
     }
 
