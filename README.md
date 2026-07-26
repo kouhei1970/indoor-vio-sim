@@ -1,4 +1,6 @@
-# 屋内ドローン フライトシミュレータ
+# indoor-vio-sim — 屋内マルチコプタ フォトリアル飛行シミュレータ
+
+![indoor-vio-sim](assets/social-card.png)
 
 **フォトリアルな画像からの自己位置推定 (visual localization / VIO / SLAM) 研究のための、屋内マルチコプタ用シミュレータ。**
 
@@ -16,7 +18,7 @@
 
 ### ブラウザで開くだけ (インストール不要)
 
-**<https://kouhei1970.github.io/realmultucoptersimulator/>**
+**<https://kouhei1970.github.io/indoor-vio-sim/>**
 
 `main` に push すると GitHub Actions が自動で公開します
 (`.github/workflows/pages.yml`)。ビルド工程は無く、リポジトリの中身を
@@ -32,8 +34,8 @@ Node.js 18 以降が必要です。**外部パッケージのインストール�
 (three.js と lil-gui は `vendor/` に同梱済み)。
 
 ```bash
-git clone <このリポジトリ>
-cd realmultucoptersimulator
+git clone https://github.com/kouhei1970/indoor-vio-sim.git
+cd indoor-vio-sim
 npm start           # → http://127.0.0.1:8080/ をブラウザで開く
 ```
 
@@ -202,8 +204,6 @@ ZIP には画像・真値軌跡・IMU・カメラ内部パラメータ・COLMAP 
 > **スティックの向きが逆のとき**: 「飛行 → スティック → 軸の割り当てと向き」で
 > 軸ごとに反転できます。「軸の生値」に 4 つの数値が出るので、スティックを
 > 倒しながらどの番号が動くかを見て合わせてください。
-> スロットルの向きはファームウェア側の定義から確定できましたが、
-> ロール・ピッチ・ヨーの向きは実機の配線に依存するため、既定値は推定です。
 
 **技術的な背景** — コントローラの USB HID レポートは
 `throttle, roll, pitch, yaw` の 4 軸 (各 0〜255、中央 128) と 8 ボタンです
@@ -211,6 +211,19 @@ ZIP には画像・真値軌跡・IMU・カメラ内部パラメータ・COLMAP 
 PC の汎用ゲームパッド (Mode 2) は軸の並びが違うので、
 `src/io/input.js` の `PAD_PROFILES` で機種ごとに割り当てを切り替えています。
 接続時に USB の VID/PID (Espressif `303a` / `8001`) と製品名から自動判別します。
+
+軸の向きは StampFly のファームウェアから決めています。
+
+| 根拠 | 場所 |
+|---|---|
+| 機体は **NED 機体座標** (+X 前・+Y 右・+Z 下) | `sf_actuator/actuator.cpp` |
+| `roll_sp = setpoint.roll × max_angle` (スティックがそのまま目標角) | `sf_controller_pid/pid_controller.cpp` |
+| `setpoint = (生 ADC − 2048) / 2048` | `sf_command/command.cpp` |
+
+NED では **ロール正 = 右翼下げ (右へ)、ピッチ正 = 機首上げ (後退)、ヨー正 = 右旋回**です。
+本シミュレータは `throttle +1 = 上昇 / roll +1 = 右 / pitch +1 = 前進 / yaw +1 = 左旋回`
+(キーボードの W・→・↑・A と同じ) なので、**ピッチとヨーだけ反転**して合わせています。
+スロットルはファーム側が `4095 − 生値` で送っているため、そのままで上昇が正です。
 
 > **公開版 (GitHub Pages) でも使えます。**
 > Gamepad API は HTTPS (secure context) でのみ動きますが、GitHub Pages は

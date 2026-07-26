@@ -48,10 +48,23 @@ export const PAD_PROFILES = {
     // (stampfly_ecosystem: firmware/controller/components/usb_hid/include/usb_hid.hpp)。
     // ブラウザはこれを -1..+1 に正規化するので、中央 128 が 0 になる。
     //
-    // throttle はファーム側で 4095 - 生値 として送っているので、
-    // 上に倒すと +1 になる (反転不要)。roll/pitch/yaw の向きは実機の
-    // 配線に依存して確定できなかったので、下の既定値は推定である。
-    // 逆に動く軸は「操縦 → スティック」で反転できる。
+    // 向きは stampfly_ecosystem のファームウェアから確定できる。
+    //
+    //   機体は NED 機体座標 (+X 前, +Y 右, +Z 下) — sf_actuator/actuator.cpp
+    //   roll_sp = setpoint.roll * max_angle    — sf_controller_pid/pid_controller.cpp
+    //   setpoint.* = (生 ADC - 2048) / 2048    — sf_command/command.cpp
+    //
+    // NED では ロール正 = 右翼下げ (右へ)、ピッチ正 = 機首上げ (後退)、
+    // ヨー正 = 右旋回。飛行実績のあるファームでこれが素直に操縦できている
+    // 以上、スティックを右に倒すと生 ADC が増える。スロットルだけは
+    // ファーム側で 4095 - 生値 として送っている (上に倒すと 255)。
+    //
+    // 本シミュレータの約束は throttle +1 = 上昇 / roll +1 = 右 /
+    // pitch +1 = 前進 / yaw +1 = 左旋回 なので、
+    //   throttle : そのまま (上 = +1)
+    //   roll     : そのまま (右 = +1)
+    //   pitch    : 反転 (前に倒すと ADC 減 → 前進を +1 にする)
+    //   yaw      : 反転 (右に倒すと ADC 増 = 右旋回 → 本シミュレータでは -1)
     axes: { throttle: 0, roll: 1, pitch: 2, yaw: 3 },
     invert: { throttle: false, roll: false, pitch: true, yaw: true },
   },

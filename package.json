@@ -1,5 +1,5 @@
 {
-  "name": "realmulticoptersimulator",
+  "name": "indoor-vio-sim",
   "version": "1.0.0",
   "description": "屋内ドローン用フライトシミュレータ — フォトリアルな画像からの自己位置推定研究向け",
   "type": "module",

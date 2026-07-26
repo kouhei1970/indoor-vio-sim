@@ -2,7 +2,7 @@
 #
 # このシミュレータはビルド不要の静的サイト (three.js と lil-gui は vendor/ に同梱)
 # なので、リポジトリの中身をそのまま配信すれば動く。
-# 公開先: https://kouhei1970.github.io/realmultucoptersimulator/
+# 公開先: https://kouhei1970.github.io/indoor-vio-sim/
 name: Deploy to GitHub Pages
 
 on:

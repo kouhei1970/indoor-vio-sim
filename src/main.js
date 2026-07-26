@@ -28,13 +28,13 @@ class App {
     this.canvas = document.getElementById('view');
     this.world = new CollisionWorld();
 
-    this.vehicle = buildVehicle('research-250');
+    this.vehicle = buildVehicle('stampfly');
     this.simCfg = clone(SIM_DEFAULTS);
     this.env = clone(ENV_DEFAULTS);
     this.cameraCfg = clone(CAMERA_DEFAULTS);
 
     this.state = {
-      vehiclePreset: 'research-250',
+      vehiclePreset: 'stampfly',
       cameraPreset: 'global-shutter-vio',
       flightMode: 'position',
       viewMode: 'orbit',
