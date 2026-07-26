@@ -198,6 +198,9 @@ export function createGui(app, container) {
     fPower.add(v.power, 'voltage', 3, 60, 0.1).name('公称電圧 [V]').onChange(rebuildVehicle);
     fPower.add(v.power, 'kv', 100, 20000, 10).name('KV [rpm/V]').onChange(rebuildVehicle);
     fPower.add(v.power, 'capacityMah', 100, 20000, 50).name('容量 [mAh]').onChange(rebuildVehicle);
+    // 標準リポは 4.20V、高電圧型 (LiHV。StampFly 純正) は 4.35V まで充電できる
+    fPower.add(v.power, 'cellFull', { '標準リポ 4.20V': 4.20, '高電圧型 4.35V': 4.35 })
+      .name('満充電電圧').onChange(rebuildVehicle);
     fPower.add(v.power, 'tauUp', 0.005, 0.3, 0.001).name('モータ時定数↑ [s]').onChange(rebuildVehicle);
     fPower.add(v.power, 'tauDown', 0.005, 0.4, 0.001).name('モータ時定数↓ [s]').onChange(rebuildVehicle);
     fPower.add(v.power, 'motorVariation', 0, 0.2, 0.005).name('モータ個体差').onChange(rebuildVehicle);

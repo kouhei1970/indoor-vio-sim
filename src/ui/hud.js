@@ -77,9 +77,9 @@ export class Hud {
       // 電圧が下がるとモータが飽和して高度を保てなくなる。原因が分かるように
       // 「バッテリー切れ」を先に出す (出力飽和より具体的なので優先)。
       ['状態', s.crashed ? '墜落'
-        : (s.battery && s.battery.soc <= 0.05 ? 'バッテリー切れ'
+        : (s.battery && s.battery.empty ? 'バッテリー切れ'
           : (s.saturated ? '出力飽和' : '正常')),
-      s.crashed || (s.battery && s.battery.soc <= 0.05) ? 'bad'
+      s.crashed || (s.battery && s.battery.empty) ? 'bad'
         : (s.saturated ? 'warn' : 'good')],
       ['描画', `${f(info.fps, 0)} fps${info.quality || ''}`,
         info.fps < 25 ? 'warn' : ''],

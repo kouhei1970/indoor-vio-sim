@@ -298,15 +298,22 @@ export class Simulator {
     // 電圧が下がるとモータが飽和し、やがて高度を保てなくなって落ちる。
     // 実機の挙動としては正しいが、何も知らせないと「制御の不具合で落ちた」
     // ように見えるので、節目でイベントを出す。
-    // (StampFly は 35g・推力重量比 1.5 で、ホバリングで 2 分ほどしか保たない)
+    // (StampFly は 35g・推力重量比 1.5 で、ホバリングで 2 分半ほどしか保たない)
+    //
+    // しきい値は残量 (SOC) で見る。実機ファームは端子電圧 (3.4V/cell) で
+    // 警告するが、端子電圧は負荷と内部抵抗で沈むので、同じ 3.4V でも機体に
+    // よって残量がまるで違う (実測: StampFly は残量 29%、内部抵抗の大きい
+    // ナノ機は残量 59% で 3.4V に達する)。残量は電荷で数えているので、
+    // 電池の種類 (標準リポ / 高電圧型) が変わっても意味が動かない。
     const soc = this.motors.soc;
-    if (soc <= 0.2 && !this.warnedLowBattery) {
+    const vCell = this.motors.voltage / (this.vehicle.power.cells || 1);
+    if (soc <= 0.25 && !this.warnedLowBattery) {
       this.warnedLowBattery = true;
-      this.events.push({ t: this.time, type: 'lowBattery', soc });
+      this.events.push({ t: this.time, type: 'lowBattery', soc, vCell });
     }
-    if (soc <= 0.05 && !this.warnedEmptyBattery) {
+    if (soc <= 0.1 && !this.warnedEmptyBattery) {
       this.warnedEmptyBattery = true;
-      this.events.push({ t: this.time, type: 'emptyBattery', soc });
+      this.events.push({ t: this.time, type: 'emptyBattery', soc, vCell });
     }
 
     // --- 破損判定 ---
@@ -358,6 +365,9 @@ export class Simulator {
       battery: {
         voltage: this.motors.voltage, current: this.motors.current,
         soc: this.motors.soc, energyWh: this.motors.energyWh,
+        // セルあたりの端子電圧 (残量表示・警告はこちらで判断する)
+        cellVoltage: this.motors.voltage / (this.vehicle.power.cells || 1),
+        low: this.warnedLowBattery, empty: this.warnedEmptyBattery,
       },
       agl: this.world.heightAboveGround(this.state.p),
       wind: { ...this.lastWind },

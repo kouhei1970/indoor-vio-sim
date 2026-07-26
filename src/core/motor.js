@@ -9,22 +9,49 @@
 
 import { clamp, makeRng } from './math.js';
 
-/** リポバッテリの開放電圧曲線 (セルあたり, SOC 1→0) */
-function cellOcv(soc) {
+/** 標準リポ (満充電 4.20V) の開放電圧曲線 (セルあたり, SOC 1→0) */
+const LIPO_OCV = [
+  [0.0, 3.30], [0.05, 3.50], [0.15, 3.65], [0.3, 3.75],
+  [0.5, 3.83], [0.7, 3.93], [0.85, 4.05], [1.0, 4.20],
+];
+
+/** 標準リポの満充電電圧 [V/cell] — 曲線の基準 */
+export const LIPO_FULL = 4.20;
+
+/** 使い切ってから電圧が落ちきるまでの超過放電量 (容量比)。3% ≒ 十数秒 */
+const OVERDRAW_COLLAPSE = 0.03;
+
+/**
+ * バッテリの開放電圧 (セルあたり)。
+ * Open-circuit voltage of one cell.
+ *
+ * 標準リポは満充電 4.20V だが、高電圧型 (LiHV / HV リポ。StampFly の
+ * 純正電池がこれ) は 4.35V まで充電できる。差の 0.15V は満充電側で最も
+ * 大きく、空に近づくと両者はほぼ同じ電圧へ収束する。実測の HV セル曲線に
+ * 合わせて、重み √soc で持ち上げる。
+ *
+ * @param {number} soc 残量 0..1
+ * @param {number} full 満充電電圧 [V/cell] (標準リポ 4.20 / LiHV 4.35)
+ */
+export function cellOcv(soc, full = LIPO_FULL) {
   const s = clamp(soc, 0, 1);
-  // 4.2V(満充電) → 3.85V(中間) → 3.5V(残量僅か) → 3.2V(空)
-  const pts = [
-    [0.0, 3.30], [0.05, 3.50], [0.15, 3.65], [0.3, 3.75],
-    [0.5, 3.83], [0.7, 3.93], [0.85, 4.05], [1.0, 4.20],
-  ];
-  for (let i = 1; i < pts.length; i++) {
-    if (s <= pts[i][0]) {
-      const [x0, y0] = pts[i - 1], [x1, y1] = pts[i];
-      const t = (s - x0) / (x1 - x0);
-      return y0 + (y1 - y0) * t;
+  let base = LIPO_OCV[LIPO_OCV.length - 1][1];
+  for (let i = 1; i < LIPO_OCV.length; i++) {
+    if (s <= LIPO_OCV[i][0]) {
+      const [x0, y0] = LIPO_OCV[i - 1], [x1, y1] = LIPO_OCV[i];
+      base = y0 + (y1 - y0) * ((s - x0) / (x1 - x0));
+      break;
     }
   }
-  return 4.2;
+  return base + (full - LIPO_FULL) * Math.sqrt(s);
+}
+
+/** 放電中の平均開放電圧 [V/cell] — 容量 [mAh] を電力量 [Wh] へ換算するときに使う */
+export function cellMeanOcv(full = LIPO_FULL) {
+  const n = 200;
+  let sum = 0;
+  for (let i = 0; i < n; i++) sum += cellOcv((i + 0.5) / n, full);
+  return sum / n;
 }
 
 export class MotorSystem {
@@ -45,8 +72,11 @@ export class MotorSystem {
     this.speeds = new Array(n).fill(0);      // 回転数 [rev/s]
     this.commands = new Array(n).fill(0);    // 指令 [0..1]
     this.failed = new Array(n).fill(false);  // 故障注入
+    // 満充電電圧 [V/cell]。標準リポ 4.20 / 高電圧型 (LiHV) 4.35
+    this.cellFull = cfg.cellFull ?? LIPO_FULL;
     this.soc = clamp(cfg.initialSoc ?? 1, 0, 1);
-    this.voltage = cellOcv(this.soc) * cfg.cells;
+    this.overdraw = 0;   // 使い切った後に更に引き出した量 (容量比)
+    this.voltage = cellOcv(this.soc, this.cellFull) * cfg.cells;
     this.current = 0;
     this.energyWh = 0;
   }
@@ -54,8 +84,10 @@ export class MotorSystem {
   reset() {
     this.speeds.fill(0);
     this.commands.fill(0);
+    this.cellFull = this.cfg.cellFull ?? LIPO_FULL;
     this.soc = clamp(this.cfg.initialSoc ?? 1, 0, 1);
-    this.voltage = cellOcv(this.soc) * this.cfg.cells;
+    this.overdraw = 0;
+    this.voltage = cellOcv(this.soc, this.cellFull) * this.cfg.cells;
     this.current = 0;
     this.energyWh = 0;
     this.failed.fill(false);
@@ -109,16 +141,25 @@ export class MotorSystem {
     // --- バッテリ ---
     const eff = this.cfg.systemEfficiency ?? 0.7;
     const elecPower = mechPower / eff + (this.cfg.avionicsPower ?? 2.0);
-    const ocv = cellOcv(this.soc) * this.cfg.cells;
+    // 使い切った後 (SOC 0) は、膝 (knee) を過ぎて電圧が一気に落ちる。これを
+    // 入れないと、残量ゼロのまま永久に飛べてしまう。
+    const collapse = Math.max(0, 1 - this.overdraw / OVERDRAW_COLLAPSE);
+    const ocv = cellOcv(this.soc, this.cellFull) * this.cfg.cells * collapse;
     const R = (this.cfg.internalResistance ?? 0.03) * this.cfg.cells;
     // P = V*I,  V = OCV - I*R  →  I を二次方程式で解く
     const disc = ocv * ocv - 4 * R * elecPower;
     this.current = disc > 0 ? (ocv - Math.sqrt(disc)) / (2 * R) : ocv / (2 * R);
-    this.voltage = Math.max(ocv - this.current * R, this.cfg.cells * 2.8);
-    const wh = (this.voltage * this.current * dt) / 3600;
-    this.energyWh += wh;
-    const capWh = (this.cfg.capacityMah / 1000) * this.cfg.cells * 3.85;
-    if (capWh > 0) this.soc = clamp(this.soc - wh / capWh, 0, 1);
+    this.voltage = Math.max(ocv - this.current * R, 0);
+    this.energyWh += (this.voltage * this.current * dt) / 3600;
+    // 残量は電荷 [Ah] で数える (クーロンカウント)。電池の定格 mAh は電荷なので、
+    // 同じ電力でも電圧が高いほど電流が減り、その分だけ長く飛べる — 高電圧型
+    // (4.35V) が有利になる理由がそのまま出る。
+    const capAh = this.cfg.capacityMah / 1000;
+    if (capAh > 0) {
+      const drain = (this.current * dt) / 3600 / capAh;
+      if (this.soc > 0) this.soc = clamp(this.soc - drain, 0, 1);
+      else this.overdraw = Math.min(1, this.overdraw + drain);
+    }
 
     return { thrusts, torques, speeds: this.speeds };
   }

@@ -167,6 +167,7 @@ export const DEFAULT_VEHICLE = {
     voltage: 14.8,             // 公称電圧 (cells から自動計算も可)
     kv: 2400,                  // [rpm/V]
     capacityMah: 1300,
+    cellFull: 4.20,            // 満充電電圧 [V/cell]。標準リポ 4.20 / 高電圧型 (LiHV) 4.35
     internalResistance: 0.012, // [Ω/cell]
     motorEfficiency: 0.85,
     systemEfficiency: 0.72,
@@ -356,6 +357,10 @@ export const PRESETS = {
     },
     power: {
       cells: 1, voltage: 3.8, kv: 17600, capacityMah: 300,
+      // 純正電池は高電圧型リポ (LiHV)。公称 3.7〜3.8V だがフル充電では
+      // 4.35V まで上がる。標準リポ (4.20V) より高い電圧を保つぶん、同じ
+      // 電力での電流が小さくなり、飛行時間と推力の余裕がわずかに増える。
+      cellFull: 4.35,
       // 1S 300mAh 30C の内部抵抗。ホバリング電流 (約 6A) で 0.4V 程度の
       // 電圧降下となり、実機同様に「電圧が下がると最大推力も下がる」挙動になる。
       internalResistance: 0.06,
@@ -402,7 +407,9 @@ export const PRESETS = {
       camera: { enabled: true, shape: 'box', size: 0.016, offset: { x: 0, y: 0.004, z: -0.042 }, tilt: 0, mass: 0.004, material: mat('#15181d', 0.2, 0.4) },
       misc: { mass: 0.008, offset: { x: 0, y: 0.006, z: 0 } },
     },
-    power: { cells: 1, voltage: 3.8, kv: 8200, capacityMah: 1100, internalResistance: 0.09, tauUp: 0.03, tauDown: 0.05, rotorInertia: 3e-7 },
+    // 制御基板・カメラだけの小型機なので、機外機器 (アビオニクス) の消費は小さい
+    power: { cells: 1, voltage: 3.8, kv: 8200, capacityMah: 1100, internalResistance: 0.09,
+      avionicsPower: 1.0, tauUp: 0.03, tauDown: 0.05, rotorInertia: 3e-7 },
     aero: { areaX: 0.004, areaY: 0.010, areaZ: 0.004, kh: 3e-6 },
     controller: { maxSpeedXY: 1.2, maxClimbRate: 1.0, maxTilt: 25 * Math.PI / 180, maxThrustN: 2.5,
       ratePitch: { kp: 0.0035, ki: 0.004, kd: 0.00006 }, rateRoll: { kp: 0.0035, ki: 0.004, kd: 0.00006 },
@@ -427,7 +434,9 @@ export const PRESETS = {
       leds: { enabled: true, frontColor: '#3aa0ff', rearColor: '#ff3a3a', intensity: 3, blink: true, blinkHz: 3 },
       misc: { mass: 0.003, offset: { x: 0, y: 0.004, z: 0 } },
     },
-    power: { cells: 1, voltage: 3.7, kv: 14000, capacityMah: 250, internalResistance: 0.25, tauUp: 0.02, tauDown: 0.035, rotorInertia: 6e-8 },
+    // MCU・IMU・無線だけの構成。StampFly (35g で 0.6W) と同程度に収まる
+    power: { cells: 1, voltage: 3.7, kv: 14000, capacityMah: 250, internalResistance: 0.25,
+      avionicsPower: 0.5, tauUp: 0.02, tauDown: 0.035, rotorInertia: 6e-8 },
     aero: { areaX: 0.0015, areaY: 0.004, areaZ: 0.0015, kh: 8e-7 },
     controller: { maxSpeedXY: 1.0, maxClimbRate: 0.8, maxTilt: 22 * Math.PI / 180, maxThrustN: 0.8,
       ratePitch: { kp: 0.0009, ki: 0.0012, kd: 0.000012 }, rateRoll: { kp: 0.0009, ki: 0.0012, kd: 0.000012 },

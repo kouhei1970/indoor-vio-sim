@@ -512,8 +512,12 @@ class App {
     // --- シミュレータからの通知 ---
     // バッテリー切れは「制御の不具合で落ちた」ように見えるので、必ず知らせる。
     for (const ev of this.sim.events.splice(0)) {
-      if (ev.type === 'lowBattery') this.notify('バッテリー残量 20% — まもなく高度を保てなくなります');
-      else if (ev.type === 'emptyBattery') this.notify('バッテリー切れ — 出力が足りず降下します');
+      if (ev.type === 'lowBattery') {
+        this.notify(`バッテリー残量 ${Math.round((ev.soc ?? 0) * 100)}%`
+          + ` (${(ev.vCell ?? 0).toFixed(2)} V/セル) — まもなく高度を保てなくなります`);
+      } else if (ev.type === 'emptyBattery') {
+        this.notify(`バッテリー残量わずか ${(ev.vCell ?? 0).toFixed(2)} V/セル — 出力が足りず降下します`);
+      }
       else if (ev.type === 'crash') {
         this.notify(ev.inverted ? '墜落 (裏返り) — R でリセット'
           : `墜落 (${(ev.speed ?? 0).toFixed(1)} m/s で衝突) — R でリセット`);

@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { v3, vlen, vsub, qToEuler, DEG } from '../src/core/math.js';
 import { resolveLayout, computeMassProperties, rotorCoefficients, performanceSummary, LAYOUTS } from '../src/core/airframe.js';
 import { Mixer } from '../src/core/mixer.js';
+import { MotorSystem, cellOcv } from '../src/core/motor.js';
 import { buildVehicle, SIM_DEFAULTS, PRESET_KEYS, deepMerge, clone } from '../src/config/vehicle.js';
 import { Simulator } from '../src/core/simulator.js';
 import { CollisionWorld } from '../src/core/collision.js';
@@ -215,6 +216,66 @@ test('バッテリーは消費され電圧が下がる', () => {
   assert.ok(sim.motors.soc < 1.0, 'SOC が減っていない');
   assert.ok(sim.motors.voltage < v0, '電圧が下がっていない');
   assert.ok(sim.motors.current > 0.5, `電流が小さすぎる: ${sim.motors.current}`);
+});
+
+/** 指定の満充電電圧でモータ系だけを組む (機体の飛行は挟まず電池だけを見る) */
+const makeMotors = (cellFull) => {
+  const v = buildVehicle('stampfly');
+  v.power = { ...v.power, cellFull };
+  const coef = rotorCoefficients(v.parts.prop, v.power, AIR_PRESETS.standard);
+  return { motors: new MotorSystem(4, v.power, coef), coef, capAh: v.power.capacityMah / 1000 };
+};
+
+test('バッテリー: 高電圧型 (LiHV) は 4.35V まで上がり、空では標準リポに収束する', () => {
+  assert.ok(Math.abs(cellOcv(1, 4.20) - 4.20) < 1e-9, '標準リポの満充電が 4.20V でない');
+  assert.ok(Math.abs(cellOcv(1, 4.35) - 4.35) < 1e-9, '高電圧型の満充電が 4.35V でない');
+  // 使い切ったところでは電池の種類によらず同じ電圧 (差は満充電側に効く)
+  assert.ok(Math.abs(cellOcv(0, 4.35) - cellOcv(0, 4.20)) < 1e-9);
+  let prev = -1;
+  for (let s = 0; s <= 1.0001; s += 0.02) {
+    const hv = cellOcv(s, 4.35), std = cellOcv(s, 4.20);
+    assert.ok(hv >= std - 1e-12, `SOC ${s.toFixed(2)} で高電圧型が下回っている`);
+    assert.ok(hv > prev, `SOC ${s.toFixed(2)} で単調増加でない`);
+    prev = hv;
+  }
+});
+
+test('バッテリー: 残量は電荷 (クーロンカウント) で減る', () => {
+  // 電池の定格 mAh は電荷なので、SOC の減りは ∫I dt / 容量 に一致するはず。
+  const { motors, coef, capAh } = makeMotors(4.20);
+  const dt = 1 / 500;
+  const cmd = new Array(4).fill(coef.kT * Math.pow(coef.nMax * 0.7, 2));
+  let ah = 0;
+  for (let i = 0; i < 500 * 20; i++) {
+    motors.step(dt, cmd);
+    ah += (motors.current * dt) / 3600;
+  }
+  const used = (1 - motors.soc) * capAh;
+  assert.ok(ah > 0.01, `電流が流れていない (${ah} Ah)`);
+  assert.ok(Math.abs(used - ah) < 1e-9, `SOC が電荷と一致しない (${used} vs ${ah} Ah)`);
+});
+
+test('バッテリー: 高電圧型のほうが同じ負荷で長く保つ', () => {
+  // 同じ電力を出し続けたとき、電圧が高いぶん電流が小さくなり残量が長持ちする。
+  const dt = 1 / 500;
+  // 残量が半分になるまでの時間で比べる
+  const drain = (cellFull) => {
+    const { motors, coef } = makeMotors(cellFull);
+    const cmd = new Array(4).fill(coef.kT * Math.pow(coef.nMax * 0.7, 2));
+    for (let i = 0; i < 500 * 600; i++) {
+      motors.step(dt, cmd);
+      if (motors.soc <= 0.5) return { t: i * dt, motors };
+    }
+    return { t: Infinity, motors };
+  };
+  const std = drain(4.20), hv = drain(4.35);
+  assert.ok(Number.isFinite(hv.t) && Number.isFinite(std.t), '残量が減っていない');
+  assert.ok(hv.t > std.t * 1.02,
+    `高電圧型が長持ちしていない (${hv.t.toFixed(1)} s vs ${std.t.toFixed(1)} s)`);
+  assert.ok(hv.motors.current < std.motors.current,
+    '同じ推力指令なのに電流が減っていない (電圧が高ければ電流は小さくなるはず)');
+  // 電圧が高い = 同じ推力指令でも回転数の余裕が大きい
+  assert.ok(hv.motors.maxSpeed() > std.motors.maxSpeed(), '高電圧型の最大回転数が大きくない');
 });
 
 test('ロータ故障時はヨーを犠牲にして高度と姿勢を保つ (ヘキサ)', () => {

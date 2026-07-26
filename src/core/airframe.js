@@ -13,6 +13,7 @@
  */
 
 import { v3, m3diag, m3add, inertiaOffset, DEG, clamp } from './math.js';
+import { cellMeanOcv } from './motor.js';
 
 /** 上から見て 反時計回り = +1 (CCW), 時計回り = -1 (CW) */
 export const CCW = 1;
@@ -302,13 +303,21 @@ export function performanceSummary(config, massProps, air, g = 9.80665) {
   const hoverN = Math.sqrt(weight / Math.max(kT * effSum, 1e-9));
   const hoverThrottle = clamp(hoverN / Math.max(nMax, 1e-9), 0, 2);
   // 単純なホバリング時間推定 (電力 = トルク×角速度 / 効率)
-  const capacityWh = (config.power.capacityMah / 1000) * config.power.voltage;
   const { kQ } = rotorCoefficients(config.parts.prop, config.power, air);
   const hoverPower = nRotors * (kQ * hoverN * hoverN) * (2 * Math.PI * hoverN)
-    / (config.power.systemEfficiency ?? 0.7);
-  const hoverMinutes = hoverPower > 1 ? (capacityWh * (config.power.usableFraction ?? 0.8)) / hoverPower * 60 : 0;
+    / (config.power.systemEfficiency ?? 0.7) + (config.power.avionicsPower ?? 2.0);
+  // 電池の定格は電荷 [Ah] なので、ホバリング電流で割って持続時間を出す。
+  // 高電圧型 (LiHV) は同じ電力でも電流が小さくなり、そのぶん長く飛べる。
+  const cells = config.power.cells ?? 1;
+  const packOcv = cells * cellMeanOcv(config.power.cellFull);
+  const R = (config.power.internalResistance ?? 0.03) * cells;
+  const disc = packOcv * packOcv - 4 * R * hoverPower;
+  const hoverCurrent = disc > 0 ? (packOcv - Math.sqrt(disc)) / (2 * R) : packOcv / (2 * R);
+  const capacityAh = (config.power.capacityMah ?? 0) / 1000;
+  const hoverMinutes = hoverCurrent > 0.01
+    ? (capacityAh * (config.power.usableFraction ?? 0.8)) / hoverCurrent * 60 : 0;
   return {
-    nRotors, thrustMax, weight, twr, hoverThrottle, hoverPower, hoverMinutes,
+    nRotors, thrustMax, weight, twr, hoverThrottle, hoverPower, hoverCurrent, hoverMinutes,
     diskLoading: weight / (nRotors * Math.PI * Math.pow(config.parts.prop.diameter / 2, 2)),
   };
 }
