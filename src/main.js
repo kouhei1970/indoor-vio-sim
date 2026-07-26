@@ -63,6 +63,14 @@ class App {
         KeyG: () => this.toggleRecording(),
         KeyH: () => this.toggleHelp(),
       },
+      // ゲームパッドのボタン。StampFly コントローラ (USB HID モード) の
+      // 割り当てに合わせてある: 0=[A]Arm 1=[F]Flip 2=[M]Mode 3=[O]Option
+      // (stampfly_ecosystem: firmware/controller/components/usb_hid/include/usb_hid.hpp)
+      padHandlers: {
+        0: () => this.toggleTakeoff(),      // [A] 離陸 / 着陸
+        1: () => this.cycleView(),          // [F] 視点切替
+        2: () => this.cycleFlightMode(),    // [M] フライトモード切替
+      },
     });
 
     this.rebuildRoom();

@@ -14,6 +14,20 @@
 
 ## クイックスタート
 
+### ブラウザで開くだけ (インストール不要)
+
+**<https://kouhei1970.github.io/realmultucoptersimulator/>**
+
+`main` に push すると GitHub Actions が自動で公開します
+(`.github/workflows/pages.yml`)。ビルド工程は無く、リポジトリの中身を
+そのまま配信しているだけです。データセットの ZIP 書き出しもブラウザ内で
+完結するので、公開版でもすべての機能が使えます。
+
+> 初回だけリポジトリの **Settings → Pages → Source** を
+> **GitHub Actions** にしておく必要があります。
+
+### 手元で動かす
+
 Node.js 18 以降が必要です。**外部パッケージのインストールは不要**です
 (three.js と lil-gui は `vendor/` に同梱済み)。
 
@@ -160,6 +174,48 @@ ZIP には画像・真値軌跡・IMU・カメラ内部パラメータ・COLMAP 
 | H | ヘルプ |
 
 ゲームパッドを接続すると自動で認識します (Mode 2 配置)。
+
+### StampFly のコントローラで操縦する
+
+[stampfly_ecosystem](https://github.com/M5Fly-kanazawa/stampfly_ecosystem) の
+コントローラ (M5Stack AtomS3 + Atom JoyStick) を、**そのまま本シミュレータの
+プロポとして使えます**。実機と同じスティックで飛ばせるので、練習にも
+制御則の比較にも使えます。
+
+1. コントローラ本体の画面をタップしてメニューを開き、**USB Mode** を選ぶ
+   (画面が青くなり `= USB HID MODE =` と表示される)
+2. USB ケーブルで PC につなぐ
+3. ブラウザでシミュレータを開き、**スティックを一度大きく動かす**
+   (ブラウザはゲームパッドを「操作されるまで」認識しません)
+4. 右パネル「飛行 → スティック (ゲームパッド)」に
+   `StampFly Controller` と出れば認識完了
+
+追加のドライバやアプリは要りません。コントローラが**標準の USB HID
+ゲームパッド**として見えるので、ブラウザの Gamepad API がそのまま読めます。
+
+| ボタン | 割り当て |
+|---|---|
+| `[A]` Arm | 離陸 / 着陸 |
+| `[F]` Flip | 視点切替 |
+| `[M]` Mode | フライトモード切替 |
+
+> **スティックの向きが逆のとき**: 「飛行 → スティック → 軸の割り当てと向き」で
+> 軸ごとに反転できます。「軸の生値」に 4 つの数値が出るので、スティックを
+> 倒しながらどの番号が動くかを見て合わせてください。
+> スロットルの向きはファームウェア側の定義から確定できましたが、
+> ロール・ピッチ・ヨーの向きは実機の配線に依存するため、既定値は推定です。
+
+**技術的な背景** — コントローラの USB HID レポートは
+`throttle, roll, pitch, yaw` の 4 軸 (各 0〜255、中央 128) と 8 ボタンです
+(`firmware/controller/components/usb_hid/include/usb_hid.hpp`)。
+PC の汎用ゲームパッド (Mode 2) は軸の並びが違うので、
+`src/io/input.js` の `PAD_PROFILES` で機種ごとに割り当てを切り替えています。
+接続時に USB の VID/PID (Espressif `303a` / `8001`) と製品名から自動判別します。
+
+> **公開版 (GitHub Pages) でも使えます。**
+> Gamepad API は HTTPS (secure context) でのみ動きますが、GitHub Pages は
+> HTTPS 配信なので条件を満たします。手元の `npm start` (127.0.0.1) も
+> localhost は secure context 扱いなので動きます。
 
 **フライトモード**
 

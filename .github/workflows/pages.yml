@@ -1,0 +1,37 @@
+# GitHub Pages への公開
+#
+# このシミュレータはビルド不要の静的サイト (three.js と lil-gui は vendor/ に同梱)
+# なので、リポジトリの中身をそのまま配信すれば動く。
+# 公開先: https://kouhei1970.github.io/realmultucoptersimulator/
+name: Deploy to GitHub Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:      # 手動実行も可能にする
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# 同時に走らないようにする (走行中のデプロイは完了させる)
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/configure-pages@v5
+      - name: リポジトリの中身をそのまま成果物にする
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: '.'
+      - id: deployment
+        uses: actions/deploy-pages@v4

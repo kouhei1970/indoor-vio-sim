@@ -24,6 +24,47 @@ const KEY_MAP = {
   KeyJ: ['roll', -1], KeyL: ['roll', 1],
 };
 
+export const AXIS_NAMES = ['throttle', 'roll', 'pitch', 'yaw'];
+
+/**
+ * ゲームパッドのプロファイル (どの軸がどの操作か・向きはどちらか)。
+ *
+ * ブラウザの Gamepad API は軸を -1..+1 で返すが、その並び順は機器の
+ * HID レポートディスクリプタの順で決まる。機種ごとに違うので表にしてある。
+ *
+ * invert が true の軸は符号を反転する。本シミュレータの向きの約束は
+ *   throttle +1 = 上昇 / roll +1 = 右へ / pitch +1 = 前進 / yaw +1 = 左旋回
+ * (キーボードの W / → / ↑ / A と同じ)。
+ */
+export const PAD_PROFILES = {
+  standard: {
+    name: '汎用ゲームパッド (Mode 2)',
+    axes: { throttle: 1, roll: 2, pitch: 3, yaw: 0 },
+    invert: { throttle: true, roll: false, pitch: true, yaw: true },
+  },
+  stampfly: {
+    name: 'StampFly コントローラ (USB HID)',
+    // HID レポートは throttle, roll, pitch, yaw の順に 0..255 の 4 軸
+    // (stampfly_ecosystem: firmware/controller/components/usb_hid/include/usb_hid.hpp)。
+    // ブラウザはこれを -1..+1 に正規化するので、中央 128 が 0 になる。
+    //
+    // throttle はファーム側で 4095 - 生値 として送っているので、
+    // 上に倒すと +1 になる (反転不要)。roll/pitch/yaw の向きは実機の
+    // 配線に依存して確定できなかったので、下の既定値は推定である。
+    // 逆に動く軸は「操縦 → スティック」で反転できる。
+    axes: { throttle: 0, roll: 1, pitch: 2, yaw: 3 },
+    invert: { throttle: false, roll: false, pitch: true, yaw: true },
+  },
+};
+
+/** ゲームパッドの id からプロファイルを推定する */
+export function detectProfile(id = '') {
+  const s = id.toLowerCase();
+  // Espressif VID 303a / StampFly コントローラ PID 8001、または製品名
+  if ((s.includes('303a') && s.includes('8001')) || s.includes('stampfly')) return 'stampfly';
+  return 'standard';
+}
+
 export class InputManager {
   constructor(options = {}) {
     this.keys = new Set();
@@ -35,8 +76,31 @@ export class InputManager {
     this.gamepadIndex = null;
     this.gamepadDeadzone = 0.08;
     this.handlers = options.handlers || {};
+    // ゲームパッドのボタンを押したときに呼ぶ処理 (ボタン番号 → 関数)
+    this.padHandlers = options.padHandlers || {};
+    this.padButtonsEnabled = true;
     this.enabled = true;
+
+    // --- ゲームパッドの設定 ---
+    // 'auto' は接続時に id から推定する (detectProfile)
+    this.padProfile = 'auto';
+    this.padName = '';
+    this.padAxes = { ...PAD_PROFILES.standard.axes };
+    this.padInvert = { ...PAD_PROFILES.standard.invert };
+    // 表示用: 生の軸の値と、割り当て後の値
+    this.padRaw = [];
+    this.padValues = { throttle: 0, roll: 0, pitch: 0, yaw: 0 };
+    this.prevButtons = [];
+
     this.bind();
+  }
+
+  /** プロファイルを適用する (軸の割り当てと向きを差し替える) */
+  applyPadProfile(key) {
+    const p = PAD_PROFILES[key];
+    if (!p) return;
+    this.padAxes = { ...p.axes };
+    this.padInvert = { ...p.invert };
   }
 
   bind() {
@@ -55,8 +119,15 @@ export class InputManager {
     window.addEventListener('blur', this._onBlur);
     window.addEventListener('gamepadconnected', (e) => {
       this.gamepadIndex = e.gamepad.index;
+      this.padName = e.gamepad.id || '';
+      // 'auto' のときだけ、機種に合わせて軸の割り当てを入れ替える
+      if (this.padProfile === 'auto') this.applyPadProfile(detectProfile(this.padName));
+      this.prevButtons = [];
     });
-    window.addEventListener('gamepaddisconnected', () => { this.gamepadIndex = null; });
+    window.addEventListener('gamepaddisconnected', () => {
+      this.gamepadIndex = null;
+      this.padName = '';
+    });
   }
 
   dispose() {
@@ -65,20 +136,36 @@ export class InputManager {
     window.removeEventListener('blur', this._onBlur);
   }
 
-  /** ゲームパッドの軸を読む (Mode 2: 左スティック = スロットル/ヨー) */
+  /**
+   * ゲームパッドの軸を読む。
+   *
+   * どの軸がどの操作かはプロファイル (padAxes / padInvert) で決まる。
+   * 汎用ゲームパッドは Mode 2 (左スティック = スロットル/ヨー)、
+   * StampFly コントローラは USB HID モードの並び (throttle/roll/pitch/yaw)。
+   */
   readGamepad() {
     if (this.gamepadIndex === null || !navigator.getGamepads) return null;
     const gp = navigator.getGamepads()[this.gamepadIndex];
     if (!gp) return null;
     const dz = (v) => (Math.abs(v) < this.gamepadDeadzone ? 0
       : (v - Math.sign(v) * this.gamepadDeadzone) / (1 - this.gamepadDeadzone));
-    return {
-      yaw: -dz(gp.axes[0] ?? 0),
-      throttle: -dz(gp.axes[1] ?? 0),
-      roll: dz(gp.axes[2] ?? 0),
-      pitch: -dz(gp.axes[3] ?? 0),
-      buttons: gp.buttons.map((b) => b.pressed),
-    };
+    this.padRaw = Array.from(gp.axes);
+    const out = { buttons: gp.buttons.map((b) => b.pressed) };
+    for (const k of AXIS_NAMES) {
+      const v = dz(gp.axes[this.padAxes[k]] ?? 0);
+      out[k] = this.padInvert[k] ? -v : v;
+      this.padValues[k] = out[k];
+    }
+    return out;
+  }
+
+  /** ゲームパッドのボタンの立ち上がりで処理を呼ぶ */
+  handlePadButtons(buttons) {
+    if (!this.padButtonsEnabled) { this.prevButtons = buttons; return; }
+    for (let i = 0; i < buttons.length; i++) {
+      if (buttons[i] && !this.prevButtons[i]) this.padHandlers[i]?.();
+    }
+    this.prevButtons = buttons;
   }
 
   /**
@@ -91,6 +178,7 @@ export class InputManager {
     if (gp) {
       target.roll = gp.roll; target.pitch = gp.pitch;
       target.yaw = gp.yaw; target.throttle = gp.throttle;
+      this.handlePadButtons(gp.buttons);
     }
     for (const [code, [axis, dir]] of Object.entries(KEY_MAP)) {
       if (this.keys.has(code)) target[axis] += dir;

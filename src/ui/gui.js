@@ -15,6 +15,7 @@ import { CAMERA_PRESETS } from '../render/cameraSensor.js';
 import { PATTERNS, YAW_MODES } from '../core/trajectory.js';
 import { AIR_PRESETS } from '../core/aero.js';
 import { VIEW_MODES } from '../render/renderer.js';
+import { PAD_PROFILES, AXIS_NAMES, detectProfile } from '../io/input.js';
 
 const nameMap = (obj, labelKey = 'label') => {
   const out = {};
@@ -375,6 +376,55 @@ export function createGui(app, container) {
     '姿勢 (angle)': 'angle',
     'アクロ (rate)': 'rate',
   }).name('モード').onChange((m) => app.setFlightMode(m)).listen();
+
+  /* --- 操縦 (キーボード / ゲームパッド / StampFly コントローラ) --- */
+  //
+  // StampFly コントローラは USB HID モード (本体メニューで "USB Mode") に
+  // すると、PC からはふつうのゲームパッドとして見える。軸の並びは
+  // throttle, roll, pitch, yaw の 4 軸なので、汎用ゲームパッド (Mode 2) とは
+  // 順番が違う。プロファイルで切り替える。
+  const fStick = fFlight.addFolder('スティック (ゲームパッド)');
+  fStick.close();
+  const padInfo = {
+    接続: '未接続',
+    軸の生値: '—',
+    再検出: () => {
+      const gp = navigator.getGamepads?.() || [];
+      for (const g of gp) {
+        if (!g) continue;
+        app.input.gamepadIndex = g.index;
+        app.input.padName = g.id || '';
+        if (app.input.padProfile === 'auto') app.input.applyPadProfile(detectProfile(g.id || ''));
+        break;
+      }
+    },
+  };
+  fStick.add(padInfo, '接続').listen().disable();
+  fStick.add(padInfo, '軸の生値').listen().disable();
+  fStick.add(padInfo, '再検出').name('接続し直す (ボタンを押してから)');
+  fStick.add(app.input, 'padProfile', {
+    '自動判別': 'auto',
+    ...Object.fromEntries(Object.entries(PAD_PROFILES).map(([k, v]) => [v.name, k])),
+  }).name('プロファイル').onChange((k) => {
+    app.input.applyPadProfile(k === 'auto' ? detectProfile(app.input.padName) : k);
+  });
+  fStick.add(app.input, 'gamepadDeadzone', 0, 0.3, 0.01).name('デッドゾーン');
+  fStick.add(app.input, 'padButtonsEnabled').name('ボタンを使う ([A]離陸 [F]視点 [M]モード)');
+  // 軸の割り当てと向き。機種によって並びが変わるので手で直せるようにする。
+  const axisLabels = { throttle: 'スロットル', roll: 'ロール', pitch: 'ピッチ', yaw: 'ヨー' };
+  const fAxis = fStick.addFolder('軸の割り当てと向き');
+  fAxis.close();
+  for (const k of AXIS_NAMES) {
+    fAxis.add(app.input.padAxes, k, 0, 7, 1).name(`${axisLabels[k]} = 軸番号`).listen();
+    fAxis.add(app.input.padInvert, k).name(`${axisLabels[k]} を反転`).listen();
+  }
+  // 生の軸の値を出す (どの軸が動くかを見て割り当てを決められる)
+  setInterval(() => {
+    const i = app.input.gamepadIndex;
+    padInfo.接続 = i === null ? '未接続' : (app.input.padName || `#${i}`).slice(0, 28);
+    padInfo.軸の生値 = app.input.padRaw.length
+      ? app.input.padRaw.map((v) => v.toFixed(2)).join(' ') : '—';
+  }, 200);
 
   const fTraj = fFlight.addFolder('自動飛行の軌道');
   const patternLabels = {
