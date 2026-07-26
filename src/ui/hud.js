@@ -76,7 +76,8 @@ export class Hud {
       ['接触', s.contact > 0 ? `${s.contact} 点` : 'なし', s.contact > 0 ? 'warn' : ''],
       ['状態', s.crashed ? '墜落' : (s.saturated ? '出力飽和' : '正常'),
         s.crashed ? 'bad' : (s.saturated ? 'warn' : 'good')],
-      ['描画', `${f(info.fps, 0)} fps`],
+      ['描画', `${f(info.fps, 0)} fps${info.quality || ''}`,
+        info.fps < 25 ? 'warn' : ''],
     ]);
 
     // ロータ出力バー

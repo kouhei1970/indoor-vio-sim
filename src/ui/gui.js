@@ -465,11 +465,30 @@ export function createGui(app, container) {
   fView.add(app.state, 'viewMode', Object.fromEntries(
     Object.entries(VIEW_MODES).map(([k, v]) => [v, k])))
     .name('視点').onChange((m) => { app.renderer.viewMode = m; }).listen();
+  // 描画が目標 fps を下回ったら、影の間引き → ブラー枚数 → 灯数 → 解像度の
+  // 順に自動で品質を落とす (renderer.js の QUALITY_LEVELS)。以下のつまみは
+  // 「上限」として働き、自動調整はそこからさらに下げるだけ。
+  fView.add(app.renderer, 'autoQuality').name('品質の自動調整')
+    .onChange((v) => { if (!v) app.renderer.setQualityLevel(0, 0); });
+  fView.add(app.renderer, 'targetFps', 15, 60, 5).name('目標 fps (自動調整)');
   // 前方レンダリングでは光源をすべての画素で評価するので、描画コストは
-  // ほぼ画素数に比例する。高 DPI の画面で重いときは、まずここを下げる。
-  // 1.0 → 0.75 で画素数は約半分、コストもおよそ半分になる。
-  fView.add(app.renderer, 'maxPixelRatio', 0.5, 2, 0.25).name('描画解像度')
+  // ほぼ画素数に比例する。重いときはまずこの 2 つを下げる。
+  //
+  // 「固定」ではウィンドウの大きさにも画面の DPI にも関係なく、常に
+  // 指定した高さで描く (幅は縦横比から決まる)。ウィンドウを広げても
+  // 描画は重くならない。表示は canvas を CSS で引き伸ばして行う。
+  fView.add(app.renderer, 'resolutionMode', { '固定 [px]': 'fixed', '画面に合わせる': 'display' })
+    .name('描画解像度の決め方').onChange(() => app.renderer.applyResolution());
+  fView.add(app.renderer, 'renderHeight', 360, 1440, 60).name('描画解像度 (高さ) [px]')
+    .onChange(() => app.renderer.applyResolution());
+  // 「画面に合わせる」のときだけ効く。高 DPI の画面では devicePixelRatio が
+  // 2 になり、画素数は 4 倍 = コストも約 4 倍になる。
+  fView.add(app.renderer, 'maxPixelRatio', 0.5, 2, 0.25).name('画素比の上限')
     .onChange((v) => app.renderer.setMaxPixelRatio(v));
+  // 建物では天井灯が 30 灯を超えることがあり、そのぶん全画素のコストが増える。
+  // 灯の到達距離は 4〜8 m なので、近い順にこの数だけ点ければ見た目はほぼ変わらない。
+  fView.add(app.renderer.buildingBuilder, 'lightBudget', 0, 32, 1)
+    .name('同時に点ける灯数 (建物, 0=全部)');
   fView.add(app.renderer, 'showPiP').name('カメラ映像を重ねる');
   fView.add(app.renderer, 'pipScale', 0.12, 0.6, 0.01).name('カメラ映像の大きさ');
   fView.add(app.renderer, 'sensorRate', 5, 120, 5).name('カメラ更新レート [Hz]');

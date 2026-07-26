@@ -483,14 +483,19 @@ class App {
     }
 
     // --- データ記録 ---
+    // 記録中は描画品質の段を固定する (1 本のデータセットの中で条件を変えない)
+    this.renderer.qualityHold = this.recorder.recording;
     if (!this.state.paused) {
       this.recorder.update(dt, snapshot, this.renderer.sensor.camera);
     }
 
     // --- HUD ---
     if (this.state.showHud) {
+      const q = this.renderer;
       this.hud.update(snapshot, {
         fps: this.fps,
+        quality: q.autoQuality && q.qualityLevel > 0
+          ? ` (品質 L${q.qualityLevel}${q.qualityHold ? ' 固定' : ''})` : '',
         perf: this.perfInfo,
         modeLabel: MODE_LABELS[this.state.flightMode] + (this.state.paused ? ' (一時停止)' : ''),
         recording: this.recorder.recording,

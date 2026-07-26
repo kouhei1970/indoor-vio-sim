@@ -52,13 +52,22 @@ for (const t of targets) {
       if (o.isLight) { lights++; if (o.castShadow) shadowCasters++; }
     });
 
+    // GPU の完了を待つ。WebGL の finish() は同期を保証しないので、
+    // 必ず同期する readPixels を使う (main.js の profile() と同じ方法)。
+    // これを怠ると、計測値は「コマンドを積むのに掛かった時間」になってしまう。
+    const sync = () => {
+      gl.setRenderTarget(null);
+      const ctx = gl.getContext();
+      ctx.readPixels(0, 0, 1, 1, ctx.RGBA, ctx.UNSIGNED_BYTE, new Uint8Array(4));
+    };
+
     // 計測: 描画のみ (物理は進めない)
     const measure = (label, fn, n = 12) => {
-      fn(); // ウォームアップ (シェーダのコンパイルを済ませる)
+      fn(); fn(); sync();   // ウォームアップ (シェーダのコンパイルを済ませる)
       gl.info.reset();
       const t0 = performance.now();
       for (let i = 0; i < n; i++) fn();
-      gl.finish?.();
+      sync();
       const ms = (performance.now() - t0) / n;
       return {
         label, ms,
@@ -89,9 +98,11 @@ for (const t of targets) {
       a.renderer.render(a.sim.state, { time: clock, dt: 1 / 60, speeds: a.sim.motors.speeds });
     };
     for (let i = 0; i < 10; i++) frame();          // ウォームアップ
+    sync();
     const tStart = performance.now();
     const N = 40;
     for (let i = 0; i < N; i++) frame();
+    sync();
     const realMs = (performance.now() - tStart) / N;
 
     // 1 フレームあたりのシーン全体パス数 (GPU に依存しない指標)。

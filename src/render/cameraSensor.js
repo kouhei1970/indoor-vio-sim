@@ -83,6 +83,8 @@ export class CameraSensor {
 
     this.prevMatrix = new THREE.Matrix4();
     this.hasPrev = false;
+    // モーションブラーの枚数の上限 (0 = 制限なし)。描画品質の自動調整が設定する。
+    this.maxBlurSamples = 0;
     this.applyConfig(this.cfg);
   }
 
@@ -237,6 +239,8 @@ export class CameraSensor {
     // (1 画素あたり 2 枚あればバンディングは見えない) ので、
     // 露光中のブレ量に応じて枚数を減らす。止まっていれば 1 枚で済む。
     let samples = (c.motionBlur && prevMatrix && c.blurSamples > 1) ? Math.round(c.blurSamples) : 1;
+    // 描画品質の自動調整による上限 (renderer.js を参照)。記録中は掛からない。
+    if (this.maxBlurSamples > 0) samples = Math.min(samples, this.maxBlurSamples);
     if (samples > 1) {
       const px = this.blurPixels(prevMatrix, curMatrix, frameDt);
       samples = Math.max(1, Math.min(samples, Math.ceil(px * 2)));

@@ -15,6 +15,37 @@ import { BuildingBuilder } from './buildingBuilder.js';
 import { DroneBuilder } from './droneBuilder.js';
 import { CameraSensor } from './cameraSensor.js';
 
+/**
+ * 描画品質の段 (自動調整で上下する)。
+ *
+ * 建物の規模や画面の大きさに関係なく目標 fps を守るために、描画コストの
+ * 大きいものから順に上限を掛けていく。数値はすべて「上限」で、利用者が
+ * GUI で設定した値より小さいほうが使われる。段 0 は上限なし = 設定のまま。
+ *
+ *   height     : 描画バッファの高さ [px] の上限。コストは概ねこの 2 乗
+ *   lights     : 同時に点ける天井灯の数
+ *   shadowRate : 影の焼き直しレート [Hz]
+ *   blur       : モーションブラーの枚数 (機体カメラ)
+ *   sensorRate : 機体カメラの更新レート [Hz]
+ *
+ * height は「利用者の設定に対する比率」ではなく**絶対値の上限**にしてある。
+ * 比率だと元の設定が大きいときに下限が下がりきらず、目標 fps を保証できない。
+ * 最下段 (240px x 4 灯) のコストは 720px x 32 灯の概ね 1/80 なので、
+ * WebGL が動く環境ならまず 30fps に届く。
+ *
+ * 見た目の影響が小さいもの (影の間引き・ブラー枚数) から先に落とし、
+ * いちばん目につく解像度は後回しにしてある。
+ */
+export const QUALITY_LEVELS = [
+  { height: Infinity, lights: Infinity, shadowRate: Infinity, blur: Infinity, sensorRate: Infinity },
+  { height: 720, lights: 16, shadowRate: 8, blur: 4, sensorRate: 30 },
+  { height: 600, lights: 12, shadowRate: 8, blur: 3, sensorRate: 20 },
+  { height: 480, lights: 10, shadowRate: 5, blur: 2, sensorRate: 15 },
+  { height: 400, lights: 8, shadowRate: 4, blur: 1, sensorRate: 15 },
+  { height: 320, lights: 6, shadowRate: 3, blur: 1, sensorRate: 10 },
+  { height: 240, lights: 4, shadowRate: 2, blur: 1, sensorRate: 10 },
+];
+
 export const VIEW_MODES = {
   orbit: '自由視点',
   chase: '追従 (三人称)',
@@ -34,12 +65,24 @@ export class SceneRenderer {
       powerPreference: 'high-performance',
       preserveDrawingBuffer: true,
     });
-    // 描画解像度。前方レンダリングでは光源をすべての画素で評価するので、
-    // 画素数がそのまま描画コストになる。高 DPI の画面では devicePixelRatio が
-    // 2 になり、画素数は 4 倍 = コストも約 4 倍。既定では 1.5 で頭打ちにして、
-    // 足りなければ GUI の「描画解像度」で上げてもらう。
+    // 描画解像度の決め方。
+    //
+    // 前方レンダリングでは光源をすべての画素で評価するので、画素数が
+    // そのまま描画コストになる。ウィンドウを広げたぶんだけ重くなるのを
+    // 避けたいので、既定では「画面上の大きさに関係なく、描画バッファの
+    // 高さを renderHeight [px] に固定する」方式にしてある。
+    // 縦横比は画面に合わせる (歪ませない) ので、コストは画面をどれだけ
+    // 大きくしても変わらない。canvas は CSS で引き伸ばして表示される。
+    //
+    //   'fixed'   : 高さ renderHeight [px] に固定 (画面の DPI も無視する)
+    //   'display' : 画面上の大きさ x 画素比 (従来の方式)
+    this.resolutionMode = 'fixed';
+    this.renderHeight = 720;
+    // 'display' のときの画素比の上限。高 DPI の画面では devicePixelRatio が
+    // 2 になり、画素数は 4 倍 = コストも約 4 倍になる。
     this.maxPixelRatio = 1.5;
-    this.renderer.setPixelRatio(this.pixelRatio());
+    this.displayWidth = 1;
+    this.displayHeight = 1;
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = THREE.PCFShadowMap;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
@@ -105,6 +148,31 @@ export class SceneRenderer {
     // 間引いても変わるのは自機の影の追従だけで、部屋の見た目は変わらない。
     this.shadowRate = 15;
     this.shadowAccum = Infinity;   // 最初のフレームは必ず焼く
+    this.shadowFrames = Infinity;  // 前回焼いてからのフレーム数
+
+    // --- 描画品質の自動調整 ---
+    //
+    // 建物の規模・画面の大きさ・GPU の速さに関係なく、目標 fps を下回らない
+    // ようにする閉ループ。制御量は平滑化したフレーム時間、操作量は品質段。
+    //
+    //   目標周期 P = 1000 / targetFps [ms]
+    //   T > P        なら段を 1 つ下げる (品質を落とす)
+    //   T < 0.65 * P なら段を 1 つ上げる (品質を戻す)
+    //
+    // 0.65 の不感帯と、段を変えた直後の待ち時間 (cooldown) でハンチングを
+    // 防ぐ。それでも 1 段あたりのコスト差が大きいと「上げる → 遅い →
+    // 下げる → 速い → 上げる」の極限周期に入るので、下げた段を下限として
+    // 覚えておき、指数バックオフで時々だけ上の段を試し直す。
+    this.autoQuality = true;
+    this.targetFps = 30;
+    this.qualityLevel = 0;
+    this.frameMs = 1000 / 60;      // 平滑化したフレーム時間 [ms]
+    this.qualityCooldown = 0;      // 段を変えてから測り直すまでの残り時間 [s]
+    this.qualityFloor = 0;         // ここより上の品質へは戻さない (段の番号の下限)
+    this.qualityRetryDelay = 10;   // 上の段を試し直す間隔 [s] (失敗のたび倍)
+    this.qualityRetry = 10;        // 次に試し直すまでの残り時間 [s]
+    // 記録中は段を動かさない (1 本のデータセットの中で条件が変わらないように)
+    this.qualityHold = false;
 
     this.buildOverlays();
     this.prevCamMatrix = new THREE.Matrix4();
@@ -220,6 +288,11 @@ export class SceneRenderer {
     this.controls.update();
     this.showColliders(env.showColliders);
     this.shadowAccum = Infinity;   // 形が変わったので影を焼き直す
+    this.shadowFrames = Infinity;
+    // 環境が変われば重さも変わるので、品質の下限と待ち時間を測り直しにする
+    this.qualityFloor = 0;
+    this.qualityRetryDelay = 10;
+    this.qualityRetry = 3;
   }
 
   /** 機体の初期位置。単室なら原点、建物ならビルダに聞く。 */
@@ -232,6 +305,7 @@ export class SceneRenderer {
     this.droneBuilder.build(vehicle, com);
     this.applySelfVisibility();
     this.shadowAccum = Infinity;   // 形が変わったので影を焼き直す
+    this.shadowFrames = Infinity;
     // 目標位置マーカーが機体より大きく見えないよう、機体寸法に比例させる
     const r = Math.min(Math.max(vehicle.frame.armLength * 0.22, 0.006), 0.07);
     this.targetMarker.scale.setScalar(r);
@@ -330,24 +404,112 @@ export class SceneRenderer {
     }
   }
 
+  /** いま効いている品質の上限 (自動調整が切ってあれば上限なし) */
+  get quality() {
+    return QUALITY_LEVELS[this.autoQuality ? this.qualityLevel : 0];
+  }
+
+  /**
+   * 品質段を更新する (毎フレーム呼ぶ)。
+   * @param {number} dt 前フレームからの経過時間 [s]
+   */
+  updateQuality(dt) {
+    // 1 フレームの外れ値で段を動かさないよう、時定数 tau で平滑化する。
+    const tau = 0.5;
+    const step = Math.min(dt, 0.5);
+    this.frameMs += (step * 1000 - this.frameMs) * (1 - Math.exp(-step / tau));
+    if (!this.autoQuality || this.qualityHold) return;
+
+    // ときどき「1 つ上の品質でもう一度やってみる」。失敗するたび次の試行まで
+    // の間隔を倍にする (指数バックオフ)。余裕があるうちは初期値へ戻す。
+    if ((this.qualityRetry -= dt) <= 0) {
+      if (this.qualityFloor > 0) {
+        this.qualityFloor--;
+        this.qualityRetryDelay = Math.min(120, this.qualityRetryDelay * 2);
+      } else {
+        this.qualityRetryDelay = 10;
+      }
+      this.qualityRetry = this.qualityRetryDelay;
+    }
+    if ((this.qualityCooldown -= dt) > 0) return;
+
+    const period = 1000 / Math.max(1, this.targetFps);
+    const last = QUALITY_LEVELS.length - 1;
+    if (this.frameMs > period && this.qualityLevel < last) {
+      // その段では目標に届かなかった。以後そこへは戻らない (試行まで)。
+      this.qualityFloor = Math.max(this.qualityFloor, this.qualityLevel + 1);
+      this.setQualityLevel(this.qualityLevel + 1, 0.5);
+    } else if (this.frameMs < period * 0.65 && this.qualityLevel > this.qualityFloor) {
+      this.setQualityLevel(this.qualityLevel - 1, 2.0);
+    }
+  }
+
+  /**
+   * 品質段を設定する。
+   * @param {number} level 段 (0 = 設定のまま)
+   * @param {number} cooldown 次に段を変えられるまでの待ち時間 [s]
+   */
+  setQualityLevel(level, cooldown = 1.0) {
+    this.qualityLevel = Math.max(0, Math.min(QUALITY_LEVELS.length - 1, Math.round(level)));
+    this.qualityCooldown = cooldown;
+    // 変更後の速さは未知なので、測り直すまでは目標を満たしている扱いにする
+    // (古い値のまま次の判定に入って、段が一気に落ちるのを防ぐ)
+    this.frameMs = (1000 / Math.max(1, this.targetFps)) * 0.8;
+    this.applyResolution();
+  }
+
   /** 実際に使う画素比 (画面の DPI と上限のうち小さいほう) */
   pixelRatio() {
+    if (this.resolutionMode === 'fixed') return 1;   // 固定が目的なので DPI は見ない
     return Math.min(window.devicePixelRatio || 1, this.maxPixelRatio);
   }
 
   /** 描画解像度の上限を変える (GUI から) */
   setMaxPixelRatio(v) {
     this.maxPixelRatio = v;
-    this.renderer.setPixelRatio(this.pixelRatio());
-    this.setSize(this.width, this.height);
+    this.applyResolution();
   }
 
+  /**
+   * 画面上の大きさ (CSS 画素) を伝える。実際に描く画素数は
+   * applyResolution() が決めるので、ここでは覚えておくだけ。
+   */
   setSize(width, height) {
-    this.renderer.setSize(width, height, false);
-    this.camera.aspect = width / height;
+    this.displayWidth = Math.max(1, width);
+    this.displayHeight = Math.max(1, height);
+    this.applyResolution();
+  }
+
+  /**
+   * 描画バッファの大きさを決めて反映する。
+   *
+   * 'fixed' では高さを renderHeight [px] に固定し、幅は画面の縦横比から
+   * 決める (歪ませないため)。ウィンドウを広げても描く画素数は変わらないので、
+   * 描画コストは画面の大きさに依存しなくなる。
+   * canvas の CSS 寸法は触らない (setSize の第 3 引数 false) ので、
+   * 表示はブラウザが引き伸ばして行う。
+   */
+  applyResolution() {
+    const aspect = this.displayWidth / this.displayHeight;
+    let w, h;
+    const cap = this.quality.height;      // 自動調整による絶対上限 [px]
+    const pr = this.pixelRatio();
+    if (this.resolutionMode === 'fixed') {
+      h = Math.max(64, Math.round(Math.min(this.renderHeight, cap)));
+      w = Math.max(64, Math.round(h * aspect));
+    } else {
+      // setSize は内部で画素比を掛けるので、実バッファの高さが cap を
+      // 超えないよう縮小率を先に求める。
+      const s = Math.min(1, cap / Math.max(1, this.displayHeight * pr));
+      w = Math.max(64, Math.round(this.displayWidth * s));
+      h = Math.max(64, Math.round(this.displayHeight * s));
+    }
+    this.renderer.setPixelRatio(pr);
+    this.renderer.setSize(w, h, false);
+    this.camera.aspect = aspect;
     this.camera.updateProjectionMatrix();
-    this.width = width;
-    this.height = height;
+    this.width = w;
+    this.height = h;
   }
 
   /**
@@ -357,6 +519,10 @@ export class SceneRenderer {
    */
   render(state, opts) {
     const { time = 0, dt = 0.016, speeds = [] } = opts;
+    // データセット生成 (forceOnboard) では 1 フレーム = 1 枚で、実時間とは
+    // 無関係に進むので、品質の自動調整は掛けない。
+    const q = opts.forceOnboard ? QUALITY_LEVELS[0] : this.quality;
+    if (!opts.forceOnboard) this.updateQuality(dt);
     this.droneBuilder.update(dt, speeds, time);
     this.activeBuilder.update(time);
     this.syncDrone(state);
@@ -369,10 +535,19 @@ export class SceneRenderer {
     //
     // 毎フレームではなく shadowRate [Hz] に間引く。データセット生成
     // (forceOnboard) では 1 フレーム = 1 枚なので必ず焼き直す。
+    //
+    // 時間だけで間引くと、描画が重くなって dt が周期 (1/shadowRate) を
+    // 超えた瞬間に「毎フレーム焼き直し」になり、遅いほど更に遅くなる
+    // 正帰還に陥る。そこで時間の周期に加えて最低フレーム間隔でも律速し、
+    // 影の焼き直しに使うフレームの割合 (デューティ比) に上限を設ける。
+    // 60fps で回っているときは従来と同じ間隔 (60/shadowRate フレームに 1 回)。
     this.shadowAccum += dt;
-    const shadowPeriod = 1 / Math.max(1, this.shadowRate);
-    const updateShadow = !!opts.forceOnboard || this.shadowAccum >= shadowPeriod;
-    if (updateShadow) this.shadowAccum = 0;
+    this.shadowFrames++;
+    const shadowPeriod = 1 / Math.max(1, Math.min(this.shadowRate, q.shadowRate));
+    const minFrameGap = Math.max(1, Math.round(60 * shadowPeriod));
+    const updateShadow = !!opts.forceOnboard
+      || (this.shadowAccum >= shadowPeriod && this.shadowFrames >= minFrameGap);
+    if (updateShadow) { this.shadowAccum = 0; this.shadowFrames = 0; }
     this.renderer.shadowMap.autoUpdate = false;
     this.renderer.shadowMap.needsUpdate = updateShadow;
 
@@ -388,6 +563,11 @@ export class SceneRenderer {
     // 俯瞰では建物を上から見るので全階を出す
     const floorsAll = () => { if (building) building.showAllFloors(); };
 
+    // 天井灯は基準点に近い一定数だけ点ける (buildingBuilder.setActiveLights を参照)。
+    // 外部視点と機体カメラでは位置が違うので、描く直前にそれぞれ選び直す。
+    // 灯数は変えないので、シェーダの作り直しは起きない。
+    const lightsFor = (cam) => { if (building) building.setActiveLights(cam, q.lights); };
+
     // --- シャドウマップの焼き直し ---
     // 影は隠している階からも落ちてほしい (階段の吹抜など) ので、焼くときだけ
     // 全階を出す。ただし three.js は render() の中で影を焼くため、そのまま
@@ -395,6 +575,7 @@ export class SceneRenderer {
     // 本描画は階カリングを効かせた状態で行う。
     if (updateShadow) {
       floorsAll();
+      lightsFor(this.camera);
       this.renderer.setRenderTarget(null);
       this.renderer.setScissor(0, 0, 2, 2);
       this.renderer.setScissorTest(true);
@@ -407,6 +588,7 @@ export class SceneRenderer {
     // --- メイン描画 ---
     if (this.viewMode === 'top') floorsAll();
     else floorsFor(this.camera.position.y);
+    lightsFor(this.camera);
     this.renderer.setRenderTarget(null);
     this.renderer.setViewport(0, 0, this.width, this.height);
     this.renderer.setScissorTest(false);
@@ -426,11 +608,13 @@ export class SceneRenderer {
     // --- 機体カメラ ---
     // 必要なとき (PiP 表示 / 一人称視点 / データ記録) だけ、指定レートで描画する
     this.sensorAccum += dt;
-    const sensorPeriod = 1 / Math.max(1, this.sensorRate);
+    const sensorPeriod = 1 / Math.max(1, Math.min(this.sensorRate, q.sensorRate));
+    this.sensor.maxBlurSamples = Number.isFinite(q.blur) ? q.blur : 0;
     if (needSensor && (this.sensorAccum >= sensorPeriod || opts.forceOnboard || !this.hasPrevCam)) {
       this.sensorAccum = 0;
       floorsFor(state.p.y);          // 機体のいる階を基準にする
       this.sensor.camera.updateMatrixWorld(true);
+      lightsFor(this.sensor.camera);
       const prev = this.hasPrevCam ? this.prevCamMatrix.clone() : null;
       this.sensor.render(this.scene, time, prev, Math.max(dt, sensorPeriod));
       this.prevCamMatrix.copy(this.sensor.camera.matrixWorld);

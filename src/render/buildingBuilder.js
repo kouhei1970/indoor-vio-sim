@@ -30,6 +30,13 @@ RectAreaLightUniformsLib.init();
 const PI = Math.PI;
 const LIGHT_CALIBRATION = 0.18;   // roomBuilder と同じ較正係数
 
+// setActiveLights() の作業用 (毎フレームの確保を避けるため使い回す)
+const _frustum = new THREE.Frustum();
+const _viewProj = new THREE.Matrix4();
+const _invView = new THREE.Matrix4();
+const _sphere = new THREE.Sphere();
+const _refPos = new THREE.Vector3();
+
 function pbr(params) {
   return new THREE.MeshStandardMaterial({ roughness: 0.7, metalness: 0.0, ...params });
 }
@@ -86,6 +93,13 @@ export class BuildingBuilder {
     scene.add(this.group);
     scene.add(this.lightGroup);
     this.lights = [];
+    // 近傍カリングの対象になる点光源 (天井灯)。setActiveLights() を参照。
+    this.pointLamps = [];
+    this.lampOrder = [];
+    // 同時に点ける天井灯の数 (0 = 制限なし)。setActiveLights() を参照。
+    // 16 は「見た目がほぼ変わらず、3 階建てで 4 倍速い」ところ
+    // (学校: 全灯 56fps → 16 灯 236fps / 8 灯まで削ると廊下の奥が暗くなる)。
+    this.lightBudget = 16;
     this.floorInfo = [];
     this.targets = [];
     // 統合対象の開始位置 (group.children のインデックス)
@@ -182,6 +196,7 @@ export class BuildingBuilder {
     dispose(this.group); this.group.clear();
     dispose(this.lightGroup); this.lightGroup.clear();
     this.lights.length = 0;
+    this.pointLamps.length = 0;
     this.floorInfo.length = 0;
     this.targets.length = 0;
     this.staticFrom = 0;
@@ -689,7 +704,9 @@ export class BuildingBuilder {
             power, reach, 1.5);
           lamp.position.set(x, y - 0.06, z);
           this.lightGroup.add(lamp);
-          this.lights.push({ light: lamp, base: power, flicker: cfg.flicker });
+          const rec = { light: lamp, base: power, flicker: cfg.flicker, score: 0 };
+          this.lights.push(rec);
+          this.pointLamps.push(rec);
         }
       }
     }
@@ -733,6 +750,82 @@ export class BuildingBuilder {
       this.lightGroup.add(dir);
       this.lights.push({ light: dir, base: cfg.sun.power * scale, flicker: 0 });
     }
+  }
+
+  /** 高さ y がどの階に属するか (setVisibleFloorsByHeight と同じ判定) */
+  floorIndexAt(y) {
+    const f = this.floorInfo;
+    let idx = 0;
+    for (let i = 0; i < f.length; i++) if (f[i].elevation <= y + 0.5) idx = i;
+    return idx;
+  }
+
+  /**
+   * 点灯させる天井灯を、そのカメラにとって効く順の一定数に絞る。
+   *
+   * 前方レンダリングでは 1 画素ごとに全光源のループを回すので、描画コストは
+   *
+   *     コスト ≈ 画素数 × 光源の数
+   *
+   * になる。灯具の到達距離 (PointLight.distance) は 4〜8 m しかないため、
+   * 遠くの灯は明るさに一切寄与しないのに毎画素で計算されている。3 階建ての
+   * 建物では 30 灯を超えるので、ここが描画時間の大半を占めていた
+   * (学校: 32 灯 48fps → 12 灯 246fps)。
+   *
+   * 優先順位は次の 3 段で決める。単純な距離順だけだと、壁の向こうの隣室や
+   * 上下階の灯が近さだけで枠を取ってしまい、見通しの利く廊下の奥が暗くなる。
+   *   1. 到達距離の球が視錐台に入らない灯 … その画に一切寄与しないので捨てる
+   *   2. 別の階の灯                       … スラブに遮られるので後回し (距離 x3)
+   *   3. 残りは基準点からの距離順
+   *
+   * 重要 — 灯数は必ず一定に保つこと:
+   * three.js は「見えている光源の数」をシェーダに定数として埋め込むため、
+   * 数が変わると全マテリアルのシェーダを作り直す。実測では、毎フレーム
+   * 灯数を 6〜10 の間で変えると 0.8fps まで落ちた (灯数 8 固定で灯を
+   * 入れ替えるだけなら 251fps)。数は固定して中身だけ差し替える。
+   *
+   * @param {THREE.Camera} camera そのパスの描画に使うカメラ
+   * @param {number} [cap] 灯数のさらなる上限 (描画品質の自動調整が渡す)
+   */
+  setActiveLights(camera, cap = Infinity) {
+    const lamps = this.pointLamps;
+    const user = this.lightBudget > 0 ? this.lightBudget : Infinity;
+    const limit = Math.min(user, cap);
+    const n = Number.isFinite(limit) ? Math.round(limit) : 0;
+    if (!lamps.length || n <= 0 || n >= lamps.length) {
+      // 制限しない (灯数が予算以下なら常に全灯。ここでも数は変わらない)
+      if (this.lampsCulled) {
+        for (const l of lamps) l.light.visible = true;
+        this.lampsCulled = false;
+      }
+      return;
+    }
+
+    camera.updateMatrixWorld();
+    _invView.copy(camera.matrixWorld).invert();
+    _viewProj.multiplyMatrices(camera.projectionMatrix, _invView);
+    _frustum.setFromProjectionMatrix(_viewProj);
+    _refPos.setFromMatrixPosition(camera.matrixWorld);
+    const refFloor = this.floorIndexAt(_refPos.y);
+
+    // 今点いている灯には余裕 (ヒステリシス) を持たせ、順位が入れ替わる
+    // たびに明滅しないようにする。
+    const HYST = 0.75;   // [m]
+    for (const l of lamps) {
+      const p = l.light.position;
+      _sphere.center.copy(p);
+      _sphere.radius = l.light.distance || 8;
+      let d = _refPos.distanceTo(p);
+      if (!_frustum.intersectsSphere(_sphere)) d += 1000;
+      else if (this.floorIndexAt(p.y) !== refFloor) d *= 3;
+      l.score = d - (l.light.visible ? HYST : 0);
+    }
+    const order = this.lampOrder;
+    order.length = 0;
+    for (const l of lamps) order.push(l);
+    order.sort((a, b) => a.score - b.score);
+    for (let i = 0; i < order.length; i++) order[i].light.visible = i < n;
+    this.lampsCulled = true;
   }
 
   update(time) {
