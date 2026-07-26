@@ -145,6 +145,21 @@ export const DEFAULT_VEHICLE = {
       mass: 0.03,
       offset: { x: 0, y: 0.01, z: 0.02 },
     },
+    /**
+     * 実機の CAD (STL) を見た目に使う場合の設定。
+     * 有効にすると、ボディ・アーム・ガード・脚・バッテリーの
+     * パラメトリック形状の代わりに STL を描画する
+     * (プロペラ・カメラ・LED は引き続きパラメトリック)。
+     * 物理 (質量・慣性・ロータ配置) は常にパラメトリック設定から計算されるので、
+     * 見た目を差し替えても飛行特性は変わらない。
+     */
+    mesh: {
+      enabled: false,
+      baseUrl: '',
+      scale: 0.001,          // STL の単位 (mm) → m
+      offset: { x: 0, y: 0, z: 0 },
+      parts: [],             // [{ file, name, material }]
+    },
   },
 
   power: {
@@ -229,14 +244,14 @@ export const PRESETS = {
    *
    * 本シミュレータは T = ct ρ n² D⁴ (n [rev/s]) の形なので、
    *   ct = Ct·4π² / (ρ D⁴),  cq = Cq·4π² / (ρ D⁵)
-   * と換算して同じ推力・トルクになるようにしている (D = 0.040 m)。
+   * と換算して同じ推力・トルクになるようにしている (D = 0.02998 m)。
    * こうすると κ = (cq/ct)·D = 6.12e-3 m となり実測値と一致する。
    *
-   * プロペラ直径の公表値は見つからなかったが、実測 Ct から逆算すると
-   * 無次元推力係数は D=40mm で CT=0.084 となり小型プロペラとして妥当
-   * (D=24mm では CT=0.65 となり物理的にありえない)。
-   * 隣接ロータ間 46 mm にも収まるので 40 mm とした。
-   * 直径を変えても ct/cq を上式で換算すれば推力は実測どおりになる。
+   * 見た目は公式ランディングページと同じ実機 CAD (STL) を使う。
+   * STL の実測寸法:
+   *   全体 81.8 x 31.5 x 81.8 mm (カタログ 82 x 82 x 30 mm と一致)
+   *   モータ中心 (±22.8, ±22.8) mm、プロペラ面の高さ 7.81 mm
+   *   プロペラ半径 14.99 mm・3 枚羽根 (STL では平板なのでこちらで生成)
    *
    * 最大回転数は実測のモータ電気モデルの平衡点から求めた
    * (3.8 V で約 41,600 rpm)。無負荷 KV 17600 に対して負荷時は 62% まで
@@ -264,7 +279,8 @@ export const PRESETS = {
     inertia: { roll: 9.16e-6, pitch: 13.3e-6, yaw: 20.4e-6 },
 
     // ロータ位置 (±0.023, ±0.023) → アーム長 = 0.023√2
-    frame: { layout: 'quad-x', armLength: 0.0325269, motorHeight: 0.005 },
+    // モータ高さは実機 CAD のプロペラ面の高さ (7.81 mm) に合わせている
+    frame: { layout: 'quad-x', armLength: 0.0325269, motorHeight: 0.0078 },
     parts: {
       body: {
         // 基板そのものがフレーム。中央に M5StampS3 が載る
@@ -284,22 +300,45 @@ export const PRESETS = {
         bellMaterial: mat('#b9bdc4', 0.7, 0.3),
       },
       prop: {
-        shape: '2blade', diameter: 0.040, pitch: 0.019, bladeWidth: 0.0065, mass: 0.00005,
-        // 実測 Ct = 6.7e-9, Cq = 4.10e-11 [ω:rad/s] からの換算値 (D = 0.040 m)
-        //   ct = Ct·4π²/(ρ D⁴) = 0.08434,  cq = Cq·4π²/(ρ D⁵) = 0.012903
-        ct: 0.084345, cq: 0.012903,
-        material: mat('#2a2e35', 0.05, 0.55, { opacity: 0.9, transparent: true }),
-        tipMaterial: mat('#ff7a1a', 0.05, 0.45),
-        tipMarker: true,
+        // 実機 CAD のプロペラ半径 14.99 mm → 直径 29.98 mm、3 枚羽根
+        shape: '3blade', diameter: 0.02998, pitch: 0.013, bladeWidth: 0.0048, mass: 0.00005,
+        // 実測 Ct = 6.7e-9, Cq = 4.10e-11 [ω:rad/s] からの換算値 (D = 0.02998 m)
+        //   ct = Ct·4π²/(ρ D⁴) = 0.267284,  cq = Cq·4π²/(ρ D⁵) = 0.054556
+        //   → κ = (cq/ct)·D = 6.12e-3 m (実測と一致)
+        ct: 0.267284, cq: 0.054556,
+        // 公式 3D ビューアと同じ色 (半透明の赤)
+        material: mat('#ff2b3d', 0.0, 0.18, { opacity: 0.62, transparent: true, emissive: '#4a0008', emissiveIntensity: 0.35 }),
+        tipMaterial: mat('#8e0512', 0.15, 0.3),
+        tipMarker: false,
       },
       guard: {
-        // 別売りオプション。有効にすると屋内でぶつけても安心な構成になる
-        enabled: false, shape: 'ring', radiusScale: 1.12, thickness: 0.0025,
-        mass: 0.0012, material: mat('#3a3f47', 0.05, 0.6),
+        // 実機の外周フレーム (プロペラ保護構造)。
+        // 見た目は STL の frame パーツが担当し、ここでは当たり判定の大きさを決める。
+        // 半径 = プロペラ半径 x 1.2 ≒ 18 mm → 中心から 40.8 mm (実機の 81.8 mm 角と一致)
+        enabled: true, shape: 'ring', radiusScale: 1.2, thickness: 0.0025,
+        mass: 0.0012, material: mat('#ccd2db', 0.05, 0.5),
       },
       landingGear: {
-        enabled: true, shape: 'leg', height: 0.008, spread: 0.018, count: 4,
+        enabled: false, shape: 'leg', height: 0.008, spread: 0.018, count: 4,
         thickness: 0.0018, mass: 0.0006, material: mat('#26292f', 0.05, 0.7),
+      },
+      // 実機の CAD (公式 StampFly Ecosystem の STL) をそのまま描画する
+      mesh: {
+        enabled: true,
+        baseUrl: './assets/stampfly/',
+        scale: 0.001,
+        offset: { x: 0, y: 0, z: 0 },
+        parts: [
+          { file: 'frame.stl', name: 'フレーム', material: mat('#ccd2db', 0.1, 0.5) },
+          { file: 'pcb.stl', name: '基板', material: mat('#0e1014', 0.2, 0.55) },
+          { file: 'm5stamps3.stl', name: 'M5StampS3', material: mat('#ff6a00', 0.1, 0.4) },
+          { file: 'battery.stl', name: 'バッテリー', material: mat('#2a1d14', 0.1, 0.6) },
+          { file: 'battery_adapter.stl', name: 'バッテリーアダプタ', material: mat('#33312d', 0.1, 0.6) },
+          { file: 'motor_fl.stl', name: 'モータ 前左', material: mat('#b9c1cb', 0.85, 0.35) },
+          { file: 'motor_fr.stl', name: 'モータ 前右', material: mat('#b9c1cb', 0.85, 0.35) },
+          { file: 'motor_rl.stl', name: 'モータ 後左', material: mat('#b9c1cb', 0.85, 0.35) },
+          { file: 'motor_rr.stl', name: 'モータ 後右', material: mat('#b9c1cb', 0.85, 0.35) },
+        ],
       },
       battery: {
         // 1S 300 mAh HV (PH2.0)

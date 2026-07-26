@@ -158,6 +158,14 @@ export function createGui(app, container) {
         addMaterial(f, p.material, '筐体');
         addMaterial(f, p.lensMaterial, 'レンズ');
       }],
+      ['mesh', '実機3Dモデル (STL)', (f, p) => {
+        f.add(p, 'enabled').name('STL を使う').onChange(rebuildVehicle);
+        f.add(p, 'scale', 0.0001, 0.01, 0.0001).name('スケール').onChange(rebuildVehicle);
+        f.add(p.offset, 'y', -0.1, 0.1, 0.001).name('高さ調整 [m]').onChange(rebuildVehicle);
+        for (const part of p.parts || []) {
+          addMaterial(f, part.material, part.name || part.file);
+        }
+      }],
       ['leds', 'LED', (f, p) => {
         f.add(p, 'enabled').name('有効').onChange(rebuildVehicle);
         f.addColor(p, 'frontColor').name('前方色').onChange(rebuildVehicle);

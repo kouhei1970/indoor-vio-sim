@@ -18,10 +18,34 @@
 
 import * as THREE from 'three';
 import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
+import { STLLoader } from 'three/addons/loaders/STLLoader.js';
 import { resolveLayout } from '../core/airframe.js';
 import { DEG } from '../core/math.js';
 
 const PI = Math.PI;
+
+/* ------------------------------------------------------------------ */
+/* 実機 CAD (STL) の読み込み                                            */
+/* ------------------------------------------------------------------ */
+
+const stlCache = new Map();
+
+/**
+ * STL を読み込む (同じファイルは一度だけ読む)。
+ * @returns {Promise<THREE.BufferGeometry|null>}
+ */
+function loadSTL(url) {
+  if (!stlCache.has(url)) {
+    const loader = new STLLoader();
+    stlCache.set(url, new Promise((resolve) => {
+      loader.load(url,
+        (geo) => { geo.computeVertexNormals(); resolve(geo); },
+        undefined,
+        () => resolve(null));
+    }));
+  }
+  return stlCache.get(url);
+}
 
 /** 設定のマテリアル記述から three.js のマテリアルを作る */
 export function makeMaterial(cfg, extra = {}) {
@@ -110,7 +134,9 @@ export class DroneBuilder {
 
   dispose() {
     this.group.traverse((o) => {
-      if (o.geometry) o.geometry.dispose();
+      // STL は複数回の再構築で使い回すのでキャッシュ側が保持する。
+      // ここで破棄すると次回の描画で消えてしまう。
+      if (o.geometry && !o.userData.sharedGeometry) o.geometry.dispose();
       if (o.material) {
         const mats = Array.isArray(o.material) ? o.material : [o.material];
         for (const m of mats) m.dispose();
@@ -139,12 +165,19 @@ export class DroneBuilder {
     this.group.add(body);
     this.bodyGroup = body;
 
-    this.buildBody(body, p);
-    this.buildArms(body, p, rotors, cfg.frame);
-    this.buildMotorsAndProps(body, p, rotors);
-    this.buildGuards(body, p, rotors);
-    this.buildLandingGear(body, p);
-    this.buildBattery(body, p);
+    // 実機の CAD (STL) が指定されていれば、機体側の見た目はそちらを使う。
+    // プロペラは STL では平板なので、常にパラメトリックに生成して回転させる。
+    const useMesh = !!(p.mesh && p.mesh.enabled && p.mesh.parts && p.mesh.parts.length);
+    if (useMesh) {
+      this.buildMesh(body, p.mesh);
+    } else {
+      this.buildBody(body, p);
+      this.buildArms(body, p, rotors, cfg.frame);
+      this.buildGuards(body, p, rotors);
+      this.buildLandingGear(body, p);
+      this.buildBattery(body, p);
+    }
+    this.buildMotorsAndProps(body, p, rotors, useMesh);
     this.buildCamera(body, p, com);
     this.buildLeds(body, p);
 
@@ -213,6 +246,43 @@ export class DroneBuilder {
     }
   }
 
+  /**
+   * 実機 CAD (STL) から機体の見た目を作る。
+   *
+   * 読み込みは非同期なので、完了した時点でシーンに差し込む
+   * (物理側はパラメトリックな設定から計算されるので描画待ちは不要)。
+   * 各パーツのマテリアルは個別に指定でき、GUI から色を変えられる。
+   */
+  buildMesh(parent, meshCfg) {
+    const group = new THREE.Group();
+    group.name = 'meshBody';
+    // STL は mm・+Z 前方・+X 左。本シミュレータの機体座標 (x=右, z=後) へ
+    // 合わせるため、スケールを掛けて Y 軸まわりに 180° 回す。
+    const s = meshCfg.scale ?? 0.001;
+    group.scale.setScalar(s);
+    group.rotation.y = PI;
+    group.position.set(meshCfg.offset?.x ?? 0, meshCfg.offset?.y ?? 0, meshCfg.offset?.z ?? 0);
+    parent.add(group);
+    this.meshGroup = group;
+
+    const token = {};
+    this.meshToken = token;
+    for (const part of meshCfg.parts) {
+      const url = `${meshCfg.baseUrl ?? ''}${part.file}`;
+      loadSTL(url).then((geo) => {
+        // 読み込み中に機体が作り直された場合は捨てる
+        if (this.meshToken !== token || !geo) return;
+        const mesh = new THREE.Mesh(geo, makeMaterial(part.material));
+        mesh.name = part.name || part.file;
+        mesh.userData.sharedGeometry = true;   // キャッシュ済み: dispose しない
+        mesh.castShadow = true;
+        mesh.receiveShadow = true;
+        mesh.layers.mask = group.layers.mask;
+        group.add(mesh);
+      });
+    }
+  }
+
   buildArms(parent, p, rotors, frame) {
     const a = p.arm;
     const mat = makeMaterial(a.material);
@@ -275,7 +345,7 @@ export class DroneBuilder {
     }
   }
 
-  buildMotorsAndProps(parent, p, rotors) {
+  buildMotorsAndProps(parent, p, rotors, skipMotors = false) {
     const m = p.motor;
     const motorMat = makeMaterial(m.material);
     const bellMat = makeMaterial(m.bellMaterial || m.material);
@@ -288,9 +358,11 @@ export class DroneBuilder {
       grp.position.set(r.position.x, r.position.y, r.position.z);
       const flip = r.coaxLevel > 0 ? -1 : 1;   // 同軸下側は上下反転
 
-      // --- モータ ---
+      // --- モータ (実機 CAD を使うときは STL 側にモータが含まれる) ---
       const md = m.diameter, mh = m.height;
-      switch (m.shape) {
+      switch (skipMotors ? 'none' : m.shape) {
+        case 'none':
+          break;
         case 'box':
           grp.add(new THREE.Mesh(new THREE.BoxGeometry(md, mh, md), motorMat));
           break;
@@ -325,7 +397,7 @@ export class DroneBuilder {
 
       // --- プロペラ (回転する部分) ---
       const propGroup = new THREE.Group();
-      propGroup.position.y = flip * (mh * 1.05);
+      propGroup.position.y = flip * (skipMotors ? 0 : mh * 1.05);
       const shape = p.prop.shape;
       const nBlades = shape === '3blade' ? 3 : shape === '4blade' ? 4
         : shape === 'ducted' ? 5 : 2;   // ダクテッドファンは多翼
@@ -362,7 +434,7 @@ export class DroneBuilder {
           transparent: true, opacity: 0, roughness: 0.9, metalness: 0,
           side: THREE.DoubleSide, depthWrite: false,
         }));
-      blur.position.y = flip * (mh * 1.05);
+      blur.position.y = flip * (skipMotors ? 0 : mh * 1.05);
       grp.add(blur);
 
       parent.add(grp);
