@@ -10,6 +10,7 @@ import * as THREE from 'three';
 import { RectAreaLightUniformsLib } from 'three/addons/lights/RectAreaLightUniformsLib.js';
 import { getTexture } from './textures.js';
 import { makeFurniture } from './furniture.js';
+import { mergeByMaterial } from './geometryMerge.js';
 import { ROOM_PRESETS, LIGHTING_PRESETS } from '../config/rooms.js';
 import { makeRng, v3 } from '../core/math.js';
 
@@ -66,7 +67,8 @@ export class RoomBuilder {
         if (o.geometry) o.geometry.dispose();
         if (o.material) {
           const mats = Array.isArray(o.material) ? o.material : [o.material];
-          for (const m of mats) m.dispose();
+          // 使い回しているマテリアル (家具など) は捨てない
+          for (const m of mats) if (!m.userData.shared) m.dispose();
         }
       });
     };
@@ -93,9 +95,25 @@ export class RoomBuilder {
 
     this.world.setRoom(size.width, size.height, size.depth);
     this.buildShell(preset, size, env);
+
+    // 装飾・家具・照明器具は動かないので、マテリアルごとに 1 つへ統合する。
+    // 影のパスは光源ごとにシーンを再描画するため、ドローコールを減らすと
+    // 主描画と影の両方が同じ比率で軽くなる。
+    const from = this.group.children.length;
     this.buildDecor(preset, size, env, rng);
     this.buildFurniture(preset, size, env, rng);
     this.buildLighting(preset, size, env);
+
+    const added = this.group.children.slice(from);
+    if (this.mergeStatic !== false && added.length > 1) {
+      this.group.updateMatrixWorld(true);
+      const meshes = [];
+      for (const o of added) o.traverse((c) => { if (c.isMesh) meshes.push(c); });
+      if (meshes.length) {
+        for (const o of added) this.group.remove(o);
+        for (const m of mergeByMaterial(meshes, 'room')) this.group.add(m);
+      }
+    }
     return this.group;
   }
 

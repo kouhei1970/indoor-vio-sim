@@ -199,6 +199,30 @@ export class CameraSensor {
    * @param {number} frameDt 前フレームからの経過時間 [s]
    * @returns {THREE.WebGLRenderTarget} ポスト処理済みの出力
    */
+  /**
+   * 露光中にカメラが動くことで生じるブレの大きさ [px] を見積もる。
+   *
+   * 回転は角度 x 焦点距離、並進は「近くの被写体までの距離」を仮定して換算する。
+   * 実際の被写体距離は分からないので、近め (0.3 m) に見積もる。
+   * 近く見積もるほどブレを大きく評価するので、枚数を減らしすぎない側に倒れる。
+   */
+  blurPixels(prevMatrix, curMatrix, frameDt) {
+    const c = this.cfg;
+    const span = clamp((c.exposureTime ?? 0.008) / Math.max(frameDt, 1e-4), 0.02, 1);
+    const pa = new THREE.Vector3(), pb = new THREE.Vector3();
+    const qa = new THREE.Quaternion(), qb = new THREE.Quaternion();
+    const sa = new THREE.Vector3(), sb = new THREE.Vector3();
+    prevMatrix.decompose(pa, qa, sa);
+    curMatrix.decompose(pb, qb, sb);
+    // 露光時間ぶんだけの動き
+    const dPos = pb.distanceTo(pa) * span;
+    const dot = Math.min(1, Math.abs(qa.dot(qb)));
+    const dAng = 2 * Math.acos(dot) * span;
+    const fx = this.intrinsics.fx;
+    const NEAR_SUBJECT = 0.3;   // [m] 近くの被写体を想定した保守的な距離
+    return dAng * fx + (dPos / NEAR_SUBJECT) * fx;
+  }
+
   render(scene, time, prevMatrix = null, frameDt = 1 / 60) {
     const r = this.renderer;
     const c = this.cfg;
@@ -208,7 +232,15 @@ export class CameraSensor {
     this.camera.updateMatrixWorld();
     const curMatrix = this.camera.matrixWorld.clone();
 
-    const samples = (c.motionBlur && prevMatrix && c.blurSamples > 1) ? Math.round(c.blurSamples) : 1;
+    // モーションブラーはシーンを blurSamples 回描き直すので、描画コストが
+    // そのまま何倍にもなる。実際に必要な枚数はブレの長さで決まる
+    // (1 画素あたり 2 枚あればバンディングは見えない) ので、
+    // 露光中のブレ量に応じて枚数を減らす。止まっていれば 1 枚で済む。
+    let samples = (c.motionBlur && prevMatrix && c.blurSamples > 1) ? Math.round(c.blurSamples) : 1;
+    if (samples > 1) {
+      const px = this.blurPixels(prevMatrix, curMatrix, frameDt);
+      samples = Math.max(1, Math.min(samples, Math.ceil(px * 2)));
+    }
 
     if (samples === 1) {
       r.setRenderTarget(this.rtScene);

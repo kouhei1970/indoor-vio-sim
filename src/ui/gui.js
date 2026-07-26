@@ -468,6 +468,9 @@ export function createGui(app, container) {
   fView.add(app.renderer, 'showPiP').name('カメラ映像を重ねる');
   fView.add(app.renderer, 'pipScale', 0.12, 0.6, 0.01).name('カメラ映像の大きさ');
   fView.add(app.renderer, 'sensorRate', 5, 120, 5).name('カメラ更新レート [Hz]');
+  // 部屋・建物は静止しているので、影を毎フレーム焼き直す必要はない。
+  // 下げるほど軽くなり、上げるほど自機の影の追従が滑らかになる。
+  fView.add(app.renderer, 'shadowRate', 1, 60, 1).name('影の更新レート [Hz]');
   fView.add(app.renderer, 'selfVisibleToCamera').name('自機を映す (機体カメラ)')
     .onChange(() => app.renderer.applySelfVisibility());
   fView.add(app.state, 'showPath').name('目標軌道を表示')

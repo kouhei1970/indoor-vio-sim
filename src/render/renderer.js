@@ -93,6 +93,14 @@ export class SceneRenderer {
     this.sensor.camera.layers.disable(this.DRONE_LAYER);
     this.sensor.camera.layers.disable(this.OVERLAY_LAYER);
 
+    // 影の更新レート [Hz]。
+    // 部屋も建物も静止していて、動くのは機体だけなので、影を毎フレーム
+    // 焼き直す必要はない。影のパスは主描画の 10〜50 倍のコストがあり
+    // (光源ごとにシーン全体をもう一度描くため)、ここが描画負荷の大半を占める。
+    // 間引いても変わるのは自機の影の追従だけで、部屋の見た目は変わらない。
+    this.shadowRate = 15;
+    this.shadowAccum = Infinity;   // 最初のフレームは必ず焼く
+
     this.buildOverlays();
     this.prevCamMatrix = new THREE.Matrix4();
     this.hasPrevCam = false;
@@ -206,6 +214,7 @@ export class SceneRenderer {
     this.camera.updateProjectionMatrix();
     this.controls.update();
     this.showColliders(env.showColliders);
+    this.shadowAccum = Infinity;   // 形が変わったので影を焼き直す
   }
 
   /** 機体の初期位置。単室なら原点、建物ならビルダに聞く。 */
@@ -217,6 +226,7 @@ export class SceneRenderer {
   buildDrone(vehicle, com) {
     this.droneBuilder.build(vehicle, com);
     this.applySelfVisibility();
+    this.shadowAccum = Infinity;   // 形が変わったので影を焼き直す
     // 目標位置マーカーが機体より大きく見えないよう、機体寸法に比例させる
     const r = Math.min(Math.max(vehicle.frame.armLength * 0.22, 0.006), 0.07);
     this.targetMarker.scale.setScalar(r);
@@ -335,12 +345,19 @@ export class SceneRenderer {
     this.syncDrone(state);
     this.updateViewCamera(state, dt);
 
-    // シャドウマップは 1 フレームに 1 回だけ更新する。
+    // シャドウマップの更新。
     // 更新は必ず外部視点カメラで行う: three.js は影を落とす物体を
     // 「描画中のカメラのレイヤー」で選別するため、機体カメラで更新すると
     // (機体カメラから見えない) 自機の影が消えてしまう。
+    //
+    // 毎フレームではなく shadowRate [Hz] に間引く。データセット生成
+    // (forceOnboard) では 1 フレーム = 1 枚なので必ず焼き直す。
+    this.shadowAccum += dt;
+    const shadowPeriod = 1 / Math.max(1, this.shadowRate);
+    const updateShadow = !!opts.forceOnboard || this.shadowAccum >= shadowPeriod;
+    if (updateShadow) this.shadowAccum = 0;
     this.renderer.shadowMap.autoUpdate = false;
-    this.renderer.shadowMap.needsUpdate = true;
+    this.renderer.shadowMap.needsUpdate = updateShadow;
 
     const onboardFull = this.viewMode === 'onboard';
     const needSensor = this.showPiP || onboardFull || opts.forceOnboard;

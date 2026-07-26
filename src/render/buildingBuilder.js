@@ -17,6 +17,7 @@ import * as THREE from 'three';
 import { RectAreaLightUniformsLib } from 'three/addons/lights/RectAreaLightUniformsLib.js';
 import { getTexture } from './textures.js';
 import { makeFurniture } from './furniture.js';
+import { mergeByMaterial } from './geometryMerge.js';
 import { BUILDING_PRESETS, ROOM_FURNITURE, rectMinusHoles, splitWall } from '../config/buildings.js';
 import { LIGHTING_PRESETS } from '../config/rooms.js';
 import { makeRng, v3 } from '../core/math.js';
@@ -87,6 +88,29 @@ export class BuildingBuilder {
     this.lights = [];
     this.floorInfo = [];
     this.targets = [];
+    // 統合対象の開始位置 (group.children のインデックス)
+    this.staticFrom = 0;
+  }
+
+  /**
+   * 直前に markStatic() を呼んでから追加した静的メッシュを、
+   * マテリアルごとに 1 つへ統合する。ドローコールが大きく減り、
+   * 影のパス (光源ごとにシーンを再描画) も同じ比率で軽くなる。
+   */
+  markStatic() { this.staticFrom = this.group.children.length; }
+
+  flushStatic(name) {
+    if (this.mergeStatic === false) { this.staticFrom = this.group.children.length; return; }
+    const added = this.group.children.slice(this.staticFrom);
+    this.staticFrom = this.group.children.length;
+    if (added.length < 2) return;
+    this.group.updateMatrixWorld(true);
+    const meshes = [];
+    for (const o of added) o.traverse((c) => { if (c.isMesh) meshes.push(c); });
+    if (!meshes.length) return;
+    for (const o of added) this.group.remove(o);
+    for (const m of mergeByMaterial(meshes, name)) this.group.add(m);
+    this.staticFrom = this.group.children.length;
   }
 
   clear() {
@@ -94,7 +118,8 @@ export class BuildingBuilder {
       if (o.geometry) o.geometry.dispose();
       if (o.material) {
         const mats = Array.isArray(o.material) ? o.material : [o.material];
-        for (const m of mats) m.dispose();
+        // 使い回しているマテリアル (家具など) は捨てない
+        for (const m of mats) if (!m.userData.shared) m.dispose();
       }
     });
     dispose(this.group); this.group.clear();
@@ -102,6 +127,7 @@ export class BuildingBuilder {
     this.lights.length = 0;
     this.floorInfo.length = 0;
     this.targets.length = 0;
+    this.staticFrom = 0;
     this.world.clearObstacles();
   }
 
@@ -142,9 +168,14 @@ export class BuildingBuilder {
     for (const floor of preset.floors) {
       this.buildFloor(floor, mats, rng, env, detail);
     }
+    this.markStatic();
     this.buildEquipment(preset, rng);
     this.buildTargets(preset);
+    this.flushStatic('equipment');
+
+    this.markStatic();
     this.buildLighting(preset, env);
+    this.flushStatic('fixtures');
     return this.group;
   }
 
@@ -198,6 +229,10 @@ export class BuildingBuilder {
       }
     }
 
+    // ここから先 (壁・階段・家具・掲示物) は動かないので、階ごとに統合する。
+    // スラブと天井は 1 枚ずつなので対象外 (天井は名前で隠せるようにも残す)。
+    this.markStatic();
+
     // --- 壁 ---
     for (const w of floor.walls) {
       this.buildWall(w, elevation, height, mats);
@@ -215,6 +250,8 @@ export class BuildingBuilder {
 
     // --- 壁面の掲示物・マーカー (特徴点を増やす) ---
     this.decorateFloor(floor, rng, env, detail);
+
+    this.flushStatic(`floor-${floor.name}`);
 
     this.floorInfo.push({
       name: floor.name, elevation, height,
