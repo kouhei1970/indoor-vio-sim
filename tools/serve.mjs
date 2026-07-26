@@ -26,15 +26,19 @@ const MIME = {
   '.txt': 'text/plain; charset=utf-8',
 };
 
-const args = process.argv.slice(2);
-const getArg = (name, fallback) => {
-  const i = args.indexOf(`--${name}`);
-  return i >= 0 && args[i + 1] ? args[i + 1] : fallback;
-};
-const port = Number(getArg('port', process.env.PORT || 8080));
-const host = getArg('host', '127.0.0.1');
+/** 静的サーバを起動する (他のツールからも使えるよう関数として公開) */
+export function startServer({ port = 8080, host = '127.0.0.1' } = {}) {
+  const server = createServer(handler);
+  return new Promise((resolve, reject) => {
+    server.on('error', reject);
+    server.listen(port, host, () => {
+      const addr = server.address();
+      resolve({ server, port: addr.port, host, url: `http://${host}:${addr.port}/` });
+    });
+  });
+}
 
-const server = createServer(async (req, res) => {
+async function handler(req, res) {
   try {
     const url = new URL(req.url, `http://${req.headers.host}`);
     let path = decodeURIComponent(url.pathname);
@@ -62,9 +66,18 @@ const server = createServer(async (req, res) => {
     res.writeHead(500, { 'Content-Type': 'text/plain; charset=utf-8' });
     res.end(`500 ${err.message}`);
   }
-});
+}
 
-server.listen(port, host, () => {
-  console.log(`屋内ドローンシミュレータを起動しました:  http://${host}:${port}/`);
+// 直接実行されたときだけサーバを起動する
+if (process.argv[1] && process.argv[1].endsWith('serve.mjs')) {
+  const args = process.argv.slice(2);
+  const getArg = (name, fallback) => {
+    const i = args.indexOf(`--${name}`);
+    return i >= 0 && args[i + 1] ? args[i + 1] : fallback;
+  };
+  const port = Number(getArg('port', process.env.PORT || 8080));
+  const host = getArg('host', '127.0.0.1');
+  const info = await startServer({ port, host });
+  console.log(`屋内ドローンシミュレータを起動しました:  ${info.url}`);
   console.log('終了するには Ctrl+C');
-});
+}

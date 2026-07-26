@@ -92,7 +92,6 @@ export class DatasetRecorder {
       pose: { p: { ...snapshot.position }, q: { ...snapshot.quaternion } },
       camera: this.readCameraPose(camera),
       blob: null,
-      telemetry: snapshot,
     };
     this.frames.push(entry);
     this.telemetry.push(snapshotToRow(snapshot));

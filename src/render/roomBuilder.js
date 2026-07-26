@@ -57,8 +57,6 @@ export class RoomBuilder {
     this.scene.add(this.group);
     this.scene.add(this.lightGroup);
     this.lights = [];
-    this.flickerLights = [];
-    this.disposables = [];
   }
 
   clear() {
@@ -76,7 +74,6 @@ export class RoomBuilder {
     dispose(this.lightGroup);
     this.lightGroup.clear();
     this.lights.length = 0;
-    this.flickerLights.length = 0;
     this.world.clearObstacles();
   }
 

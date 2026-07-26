@@ -77,9 +77,17 @@ export class SceneRenderer {
     // 機体カメラに自機を写すか。既定では写さない (筐体の内側が見えてしまうため)。
     // 影は光源側で計算されるので、写さなくても自機の影は地面に落ちる。
     this.selfVisibleToCamera = false;
+    // レイヤー構成
+    //   0: シーン本体 (部屋・家具) — すべてのカメラから見える
+    //   1: 自機のモデル            — 外部視点のみ (既定)
+    //   2: 補助表示 (軌道・履歴・当たり判定) — 外部視点のみ。
+    //      データセットの画像に線が写り込まないよう、機体カメラからは必ず除外する。
     this.DRONE_LAYER = 1;
+    this.OVERLAY_LAYER = 2;
     this.camera.layers.enable(this.DRONE_LAYER);
+    this.camera.layers.enable(this.OVERLAY_LAYER);
     this.sensor.camera.layers.disable(this.DRONE_LAYER);
+    this.sensor.camera.layers.disable(this.OVERLAY_LAYER);
 
     this.buildOverlays();
     this.prevCamMatrix = new THREE.Matrix4();
@@ -119,13 +127,6 @@ export class SceneRenderer {
       new THREE.MeshBasicMaterial({ color: 0x4da3ff, transparent: true, opacity: 0.6 }));
     this.overlay.add(this.targetMarker);
 
-    // 機体カメラの視錐台
-    this.frustumHelper = new THREE.LineSegments(
-      new THREE.BufferGeometry(),
-      new THREE.LineBasicMaterial({ color: 0x36d399, transparent: true, opacity: 0.5 }));
-    this.frustumHelper.visible = false;
-    this.overlay.add(this.frustumHelper);
-
     // PiP 表示用
     this.pipScene = new THREE.Scene();
     this.pipCamera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
@@ -133,6 +134,13 @@ export class SceneRenderer {
     this.pipQuad = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), this.pipMaterial);
     this.pipQuad.frustumCulled = false;
     this.pipScene.add(this.pipQuad);
+
+    this.applyOverlayLayer();
+  }
+
+  /** 補助表示を機体カメラから除外する */
+  applyOverlayLayer() {
+    this.overlay.traverse((o) => o.layers.set(this.OVERLAY_LAYER));
   }
 
   setPath(points) {
@@ -200,6 +208,7 @@ export class SceneRenderer {
     this.sensor.camera.layers.set(0);
     if (this.selfVisibleToCamera) this.sensor.camera.layers.enable(this.DRONE_LAYER);
     this.camera.layers.enable(this.DRONE_LAYER);
+    this.camera.layers.enable(this.OVERLAY_LAYER);
   }
 
   showColliders(show) {
@@ -230,6 +239,7 @@ export class SceneRenderer {
     this.colliderHelper = new THREE.LineSegments(geo,
       new THREE.LineBasicMaterial({ color: 0xff4d6d, transparent: true, opacity: 0.5 }));
     this.colliderHelper.frustumCulled = false;
+    this.colliderHelper.layers.set(this.OVERLAY_LAYER);
     this.overlay.add(this.colliderHelper);
   }
 

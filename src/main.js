@@ -298,8 +298,38 @@ class App {
 
   /* ------------------------------------------------------------ */
 
+  /**
+   * ヘッドレス実行用: 決まった刻み幅で 1 ステップ進めて 1 フレーム記録する。
+   *
+   * 画面の更新速度に依存せず、指定した dt どおりに時間が進むので、
+   * 実行環境が違っても同じデータセットが得られる (再現性の確保)。
+   * tools/render_dataset.mjs から呼ばれる。
+   */
+  headlessStep(dt) {
+    this.sim.setCommand({ roll: 0, pitch: 0, yaw: 0, throttle: 0 });
+    this.sim.advance(dt);
+    const snapshot = this.sim.snapshot();
+    this.renderer.render(this.sim.state, {
+      time: this.sim.time, dt, speeds: this.sim.motors.speeds, forceOnboard: true,
+    });
+    this.renderer.pushTrail(this.sim.state.p);
+    if (this.recorder.recording) {
+      // update() ではなく直接取り込む (1 ステップ = 1 フレーム)
+      this.recorder.capture(snapshot, this.renderer.sensor.camera);
+      if (this.recorder.frameCount >= this.recorder.config.maxFrames) this.recorder.stop();
+    }
+    return {
+      t: this.sim.time,
+      frames: this.recorder.frameCount,
+      recording: this.recorder.recording,
+      crashed: this.sim.crashed,
+      position: this.sim.state.p,
+    };
+  }
+
   animate() {
     requestAnimationFrame(() => this.animate());
+    if (this.headless) return;   // ヘッドレス実行中は自動ループを止める
     const now = performance.now();
     let dt = (now - this.lastTime) / 1000;
     this.lastTime = now;

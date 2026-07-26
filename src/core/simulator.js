@@ -40,7 +40,6 @@ export class Simulator {
     this.sensors = new SensorSuite(sim.sensors, sim.seed + 22);
     this.trajectory = new Trajectory(sim.trajectory, world.room);
     this.command = { roll: 0, pitch: 0, yaw: 0, throttle: 0 };
-    this.telemetry = [];
     this.events = [];
     this.rebuild();
     this.reset();
@@ -93,7 +92,6 @@ export class Simulator {
     this.time = 0;
     this.stepCount = 0;
     this.accelWorld = v3(0, 0, 0);
-    this.telemetry.length = 0;
     this.events.length = 0;
     this.crashed = false;
     this.contactInfo = { contactCount: 0, maxDepth: 0 };
