@@ -250,10 +250,25 @@ export function computeMassProperties(config) {
     I = I.map((v) => v * scale);
   }
 
+  // 慣性テンソルの手動指定。
+  // 実機を振り子法などで計測した値がある場合は、パーツからの推定より
+  // そちらを使ったほうが姿勢応答が実機に一致する。
+  // inertia は機体の慣用的な軸 (ロール/ピッチ/ヨー) で与え、
+  // ここで内部座標 (x=右, y=上, z=後) の対角成分へ並べ替える。
+  let inertiaSource = 'parts';
+  if (config.inertiaMode === 'manual' && config.inertia) {
+    const { roll, pitch, yaw } = config.inertia;
+    if (roll > 0 && pitch > 0 && yaw > 0) {
+      I = m3diag(pitch, yaw, roll);
+      inertiaSource = 'manual';
+    }
+  }
+
   return {
     mass,
     com,
     inertia: I,
+    inertiaSource,
     breakdown: items.map((it) => ({ name: it.name, mass: it.mass * scale })),
     rotors,
   };

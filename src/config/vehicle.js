@@ -38,6 +38,9 @@ export const DEFAULT_VEHICLE = {
   description: '',
   massMode: 'auto',        // 'auto' = パーツ質量の合計, 'manual' = totalMass を使う
   totalMass: 0.628,
+  // 慣性テンソル: 'auto' = パーツ形状から計算, 'manual' = 下の実測値を使う
+  inertiaMode: 'auto',
+  inertia: { roll: 0, pitch: 0, yaw: 0 },   // [kg m^2] (manual のときのみ有効)
 
   frame: {
     layout: 'quad-x',
@@ -212,31 +215,56 @@ export const PRESETS = {
   /**
    * M5Stack StampFly.
    *
-   * 公表されている実機の仕様に合わせている:
-   *   全備重量 36.8 g / 外形 82 x 82 x 30 mm
-   *   モータ   716-17600KV コアレス (φ7 x 16 mm, 2.7 g/個)
-   *   プロペラ 0.05 g/枚
-   *   バッテリ 1S 300 mAh HV (30C)
-   *   MCU      M5StampS3 (ESP32-S3)
-   *   センサ   BMI270 / BMP280 / BMM150 / VL53L3CX / PMW3901 / INA3221
-   *   プロペラガードは別売りオプションなので既定では付けていない
+   * 物理パラメータは公式の StampFly Ecosystem (M5Fly-kanazawa/stampfly_ecosystem)
+   * のシミュレータが使っている実測値をそのまま採用している。
    *
-   * プロペラ直径は公表値が見つからなかったため、外形 82 mm 角に 4 発を
-   * 干渉なく収める幾何条件から 40 mm とした
-   * (アーム長 30 mm → 隣接ロータ間 42 mm > プロペラ径 40 mm)。
-   * 実機の値が分かれば parts.prop.diameter と frame.armLength を直せばよい。
+   *   質量       0.035 kg
+   *   慣性       diag(9.16e-6, 13.3e-6, 20.4e-6) kg m^2 (ロール/ピッチ/ヨー)
+   *   ロータ位置 (±0.023, ±0.023, 0.005) m → アーム長 32.5 mm
+   *   推力係数   Ct = 6.7e-9   (T = Ct ω²,  ω [rad/s])   2026-07-15 ベンチ実測
+   *   トルク係数 Cq = 4.10e-11 (Q = Cq ω²)               同上
+   *   κ = Cq/Ct  = 6.12e-3 m  (ファームのミキサと同じ、飛行検証済み)
+   *   ロータ慣性 Jmp = 1.375e-8 kg m^2
+   *   モータ     Rm = 0.63 Ω, Lm = 7.5 µH, Ke = 5.5e-4
+   *
+   * 本シミュレータは T = ct ρ n² D⁴ (n [rev/s]) の形なので、
+   *   ct = Ct·4π² / (ρ D⁴),  cq = Cq·4π² / (ρ D⁵)
+   * と換算して同じ推力・トルクになるようにしている (D = 0.040 m)。
+   * こうすると κ = (cq/ct)·D = 6.12e-3 m となり実測値と一致する。
+   *
+   * プロペラ直径の公表値は見つからなかったが、実測 Ct から逆算すると
+   * 無次元推力係数は D=40mm で CT=0.084 となり小型プロペラとして妥当
+   * (D=24mm では CT=0.65 となり物理的にありえない)。
+   * 隣接ロータ間 46 mm にも収まるので 40 mm とした。
+   * 直径を変えても ct/cq を上式で換算すれば推力は実測どおりになる。
+   *
+   * 最大回転数は実測のモータ電気モデルの平衡点から求めた
+   * (3.8 V で約 41,600 rpm)。無負荷 KV 17600 に対して負荷時は 62% まで
+   * しか回らないので、motorEfficiency でその比を表している。
+   *
+   * ロータ番号: 本シミュレータは 0=前左(CW), 1=後左(CCW), 2=後右(CW), 3=前右(CCW)。
+   * ファームウェアの 1_FR / 2_RR / 3_RL / 4_FL と回転方向は一致している
+   * (対応は 0↔4, 1↔3, 2↔2, 3↔1)。
    *
    * 実機にカメラは無い。ここでは自己位置推定の研究用に
-   * 0.9 g の小型カメラを機首上部に載せた構成にしている
-   * (「カメラ (機体側)」→「有効」を外せば実機と同じ 36.8 g になる)。
+   * 0.9 g の小型カメラを機首上部に載せた構成にしている。
+   * カタログ値の全備重量は 36.8 g、外形 82 x 82 x 30 mm。
    */
   stampfly: {
     name: 'StampFly (M5Stack)',
-    description: '36.8g・82mm 角の超小型機。716 コアレスモータ + 1S 300mAh。'
-      + '実機のセンサ構成 (IMU/気圧/ToF/オプティカルフロー/磁気) と同じ組み合わせで飛ばせる。'
+    description: '35g・82mm 角の超小型機。公式 StampFly Ecosystem の実測パラメータ'
+      + '(質量・慣性テンソル・推力/トルク係数・モータ定数) をそのまま使用。'
+      + '実機のセンサ構成 (IMU/気圧/ToF/オプティカルフロー/磁気) と同じ組み合わせ。'
       + 'カメラは実機には無いので研究用の追加分 (0.9g)。プロペラガードは別売りのため既定では無し。',
-    totalMass: 0.0377,
-    frame: { layout: 'quad-x', armLength: 0.030, motorHeight: 0.005 },
+
+    // 実測値をそのまま使う (パーツからの推定では実機の姿勢応答と合わないため)
+    massMode: 'manual',
+    totalMass: 0.035,
+    inertiaMode: 'manual',
+    inertia: { roll: 9.16e-6, pitch: 13.3e-6, yaw: 20.4e-6 },
+
+    // ロータ位置 (±0.023, ±0.023) → アーム長 = 0.023√2
+    frame: { layout: 'quad-x', armLength: 0.0325269, motorHeight: 0.005 },
     parts: {
       body: {
         // 基板そのものがフレーム。中央に M5StampS3 が載る
@@ -257,7 +285,9 @@ export const PRESETS = {
       },
       prop: {
         shape: '2blade', diameter: 0.040, pitch: 0.019, bladeWidth: 0.0065, mass: 0.00005,
-        ct: 0.10, cq: 0.011,
+        // 実測 Ct = 6.7e-9, Cq = 4.10e-11 [ω:rad/s] からの換算値 (D = 0.040 m)
+        //   ct = Ct·4π²/(ρ D⁴) = 0.08434,  cq = Cq·4π²/(ρ D⁵) = 0.012903
+        ct: 0.084345, cq: 0.012903,
         material: mat('#2a2e35', 0.05, 0.55, { opacity: 0.9, transparent: true }),
         tipMaterial: mat('#ff7a1a', 0.05, 0.45),
         tipMarker: true,
@@ -287,12 +317,21 @@ export const PRESETS = {
     },
     power: {
       cells: 1, voltage: 3.8, kv: 17600, capacityMah: 300,
-      internalResistance: 0.12, motorEfficiency: 0.85,
-      // ブラシ (コアレス) モータ + FET ドライブは効率が低い。
-      // 0.40 にするとホバリング時間の推定が実機の公称 (約 4 分) と一致する。
-      systemEfficiency: 0.40,
-      avionicsPower: 0.6, tauUp: 0.018, tauDown: 0.03,
-      motorVariation: 0.03, rotorInertia: 3e-8,
+      // 1S 300mAh 30C の内部抵抗。ホバリング電流 (約 6A) で 0.4V 程度の
+      // 電圧降下となり、実機同様に「電圧が下がると最大推力も下がる」挙動になる。
+      internalResistance: 0.06,
+      // 無負荷 KV は 17600 rpm/V だが、プロペラ負荷ではモータ抵抗による
+      // 電圧降下で 62% までしか回らない (実測の電気モデルの平衡点から算出)。
+      //   3.8 V → 約 41,600 rpm、このとき推力重量比は約 1.5
+      motorEfficiency: 0.6226,
+      // 実測の Rm = 0.63 Ω による銅損が大きく、コアレスモータの
+      // 電気→機械の変換効率はホバリング点で約 32%。
+      systemEfficiency: 0.32,
+      avionicsPower: 0.6,
+      // モータの時定数 = Jmp / (Dm + Km²/Rm + 2 Cq ω_hover) ≒ 18 ms
+      tauUp: 0.018, tauDown: 0.022,
+      motorVariation: 0.03,
+      rotorInertia: 1.375e-8,   // Jmp (実測)
     },
     aero: { areaX: 0.0015, areaY: 0.0024, areaZ: 0.0015, kh: 1.5e-6 },
     controller: {

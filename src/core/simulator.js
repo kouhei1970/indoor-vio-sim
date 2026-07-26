@@ -68,6 +68,7 @@ export class Simulator {
       ctrlCfg = autoTuneController(v.controller, this.massProps.inertia, v.power.tauUp, {
         torqueMax: tq,
         thrustMax: tq.thrust,
+        mass: this.massProps.mass,
         scale: v.controller.tuningScale ?? 1.0,
       });
       this.tunedController = ctrlCfg;

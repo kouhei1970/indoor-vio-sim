@@ -110,7 +110,9 @@ export class Hud {
           ['質量', `${f(p.mass * 1000, 0)} g`],
           ['ロータ数', `${p.nRotors}`],
           ['最大推力', `${f(p.thrustMax, 1)} N`],
-          ['推力重量比', `${f(p.twr, 2)}`, p.twr < 1.5 ? 'bad' : (p.twr < 2 ? 'warn' : 'good')],
+          // 1.25 未満は離陸も難しい。1.25〜2.0 は飛べるが余力が少ない
+          // (StampFly など実機でも 1.5 程度の機体はある)
+          ['推力重量比', `${f(p.twr, 2)}`, p.twr < 1.25 ? 'bad' : (p.twr < 2 ? 'warn' : 'good')],
           ['ホバリング出力', `${f(p.hoverThrottle * 100, 0)} %`],
           ['ホバリング時間', `${f(p.hoverMinutes, 1)} 分`],
           ['ディスク荷重', `${f(p.diskLoading, 1)} N/m²`],

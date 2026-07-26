@@ -71,6 +71,14 @@ export function createGui(app, container) {
     fFrame.add(v, 'massMode', { 'パーツ合計': 'auto', '総質量を指定': 'manual' })
       .name('質量の決め方').onChange(rebuildVehicle);
     fFrame.add(v, 'totalMass', 0.01, 10, 0.001).name('総質量 [kg]').onChange(rebuildVehicle);
+    // 実測の慣性テンソルを直接入れたい場合 (実機と姿勢応答を合わせるとき)
+    fFrame.add(v, 'inertiaMode', { 'パーツから計算': 'auto', '実測値を指定': 'manual' })
+      .name('慣性の決め方').onChange(rebuildVehicle);
+    const fI = fFrame.addFolder('慣性テンソル (実測値)');
+    fI.close();
+    fI.add(v.inertia, 'roll', 0, 0.2, 1e-7).name('ロール [kg m^2]').onChange(rebuildVehicle);
+    fI.add(v.inertia, 'pitch', 0, 0.2, 1e-7).name('ピッチ [kg m^2]').onChange(rebuildVehicle);
+    fI.add(v.inertia, 'yaw', 0, 0.4, 1e-7).name('ヨー [kg m^2]').onChange(rebuildVehicle);
 
     /* --- 各パーツ --- */
     const partDefs = [

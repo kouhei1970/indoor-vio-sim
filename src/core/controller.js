@@ -309,6 +309,19 @@ export function autoTuneController(base, inertia, tauMotor, limits) {
   const tq = limits.torqueMax;
   const lim = { x: Math.max(tq.x * 0.5, 1e-5), y: Math.max(tq.y * 0.5, 1e-6), z: Math.max(tq.z * 0.5, 1e-5) };
 
+  // 加速度の上限は「実際に出せる推力」から決める。
+  // 推力重量比の低い機体 (例: StampFly は約 1.5) で上限を高く取ると、
+  // 速度ループが実現不可能な加速度を要求してミキサが飽和し続けてしまう。
+  // 姿勢制御用に推力の一部を必ず残す。全部を高度制御に使ってしまうと、
+  // ミキサに差分を作る余地が無くなり姿勢を保てなくなる
+  // (推力重量比が 1.5 程度の機体で顕著)。
+  const thrustReserve = 0.82;
+  const availUp = limits.mass > 0
+    ? Math.max((limits.thrustMax * thrustReserve) / limits.mass - G, 0.5)
+    : base.accelLimitZ;
+  const accelLimitZ = Math.min(base.accelLimitZ, availUp);
+  const accelLimit = Math.min(base.accelLimit, 0.9 * G * Math.tan(base.maxTilt));
+
   return {
     ...base,
     ratePitch: axis(Ix, wRate),
@@ -320,8 +333,10 @@ export function autoTuneController(base, inertia, tauMotor, limits) {
     yawGain: wYaw / 3,
     velXY: { kp: wVel, ki: wVel * wVel / 3, kd: 0 },
     velZ: { kp: wVelZ, ki: wVelZ * wVelZ / 3, kd: 0 },
+    accelLimit,
+    accelLimitZ,
     posGain: wPos,
-    maxThrustN: limits.thrustMax * 1.05,
+    maxThrustN: limits.thrustMax * thrustReserve,
     dCutoff: clamp(0.35 / tau, 15, 80),
     tuned: { wRate, wAtt, wVel, wPos, wVelZ, wYaw },
   };

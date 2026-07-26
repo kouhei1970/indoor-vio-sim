@@ -285,3 +285,87 @@ test('決定論性: 同じシードなら同じ軌跡になる', () => {
   const a = run(), b = run();
   assert.equal(a.x, b.x); assert.equal(a.y, b.y); assert.equal(a.z, b.z);
 });
+
+/* ------------------------------------------------------------------ */
+/* StampFly: 公式 StampFly Ecosystem の実測値と一致していることを確認    */
+/* (M5Fly-kanazawa/stampfly_ecosystem の simulator/vpython/core より)   */
+/* ------------------------------------------------------------------ */
+
+test('StampFly: 質量・慣性テンソルが実測値と一致する', () => {
+  const v = buildVehicle('stampfly');
+  const mp = computeMassProperties(v);
+  assert.equal(mp.inertiaSource, 'manual', '実測の慣性テンソルが使われていない');
+  assert.ok(Math.abs(mp.mass - 0.035) < 1e-9, `質量 ${mp.mass}`);
+  // 内部座標 (x=右, y=上, z=後) の対角成分 = (ピッチ, ヨー, ロール)
+  assert.ok(Math.abs(mp.inertia[0] - 13.3e-6) < 1e-12, `ピッチ慣性 ${mp.inertia[0]}`);
+  assert.ok(Math.abs(mp.inertia[4] - 20.4e-6) < 1e-12, `ヨー慣性 ${mp.inertia[4]}`);
+  assert.ok(Math.abs(mp.inertia[8] - 9.16e-6) < 1e-12, `ロール慣性 ${mp.inertia[8]}`);
+  // 非対角成分はゼロ
+  for (const i of [1, 2, 3, 5, 6, 7]) assert.equal(mp.inertia[i], 0);
+});
+
+test('StampFly: ロータ配置が実測値 (±23mm) と一致する', () => {
+  const v = buildVehicle('stampfly');
+  const rotors = resolveLayout(v.frame);
+  assert.equal(rotors.length, 4);
+  for (const r of rotors) {
+    assert.ok(Math.abs(Math.abs(r.position.x) - 0.023) < 1e-6, `x = ${r.position.x}`);
+    assert.ok(Math.abs(Math.abs(r.position.z) - 0.023) < 1e-6, `z = ${r.position.z}`);
+  }
+  // ファームウェアと同じ回転方向: 前左=CW, 後左=CCW, 後右=CW, 前右=CCW
+  const at = (x, z) => rotors.find((r) => Math.abs(r.position.x - x) < 1e-6
+    && Math.abs(r.position.z - z) < 1e-6);
+  assert.equal(at(-0.023, -0.023).spin, -1, '前左 (4_FL) が CW でない');
+  assert.equal(at(-0.023, 0.023).spin, 1, '後左 (3_RL) が CCW でない');
+  assert.equal(at(0.023, 0.023).spin, -1, '後右 (2_RR) が CW でない');
+  assert.equal(at(0.023, -0.023).spin, 1, '前右 (1_FR) が CCW でない');
+});
+
+test('StampFly: 推力・トルク係数が実測値と一致する', () => {
+  const v = buildVehicle('stampfly');
+  const coef = rotorCoefficients(v.parts.prop, v.power, AIR_PRESETS.standard);
+  // 本シミュレータは T = kT n² (n [rev/s])。実測は T = Ct ω² (ω [rad/s])。
+  const Ct = coef.kT / (4 * Math.PI * Math.PI);
+  const Cq = coef.kQ / (4 * Math.PI * Math.PI);
+  assert.ok(Math.abs(Ct - 6.7e-9) / 6.7e-9 < 1e-3, `Ct = ${Ct.toExponential(4)} (実測 6.7e-9)`);
+  assert.ok(Math.abs(Cq - 4.10e-11) / 4.10e-11 < 1e-3, `Cq = ${Cq.toExponential(4)} (実測 4.10e-11)`);
+  // κ = Cq/Ct はファームのミキサ定数と一致していなければならない
+  const kappa = Cq / Ct;
+  assert.ok(Math.abs(kappa - 6.12e-3) / 6.12e-3 < 2e-3, `κ = ${kappa.toExponential(4)} (実測 6.12e-3)`);
+});
+
+test('StampFly: 最大回転数と推力重量比が実測モデルと一致する', () => {
+  const v = buildVehicle('stampfly');
+  const mp = computeMassProperties(v);
+  const coef = rotorCoefficients(v.parts.prop, v.power, AIR_PRESETS.standard);
+  const perf = performanceSummary(v, mp, AIR_PRESETS.standard);
+  // 実測の電気モデル (Rm=0.63, Ke=5.5e-4, Cq, Dm, Qf) の 3.8V 平衡点
+  assert.ok(Math.abs(coef.rpmMax - 41637) / 41637 < 0.01,
+    `最大回転数 ${coef.rpmMax.toFixed(0)} rpm (実測モデル 41,637)`);
+  assert.ok(Math.abs(perf.twr - 1.485) < 0.02, `推力重量比 ${perf.twr.toFixed(3)} (実測モデル 1.485)`);
+  // ホバリング回転数
+  const nHover = Math.sqrt((mp.mass * G / 4) / coef.kT) * 60;
+  assert.ok(Math.abs(nHover - 34192) / 34192 < 0.01,
+    `ホバリング回転数 ${nHover.toFixed(0)} rpm (実測モデル 34,192)`);
+});
+
+test('StampFly: 推力重量比が低くても位置保持できる', () => {
+  // 推力重量比 1.5 程度の機体は、高度制御が推力を使い切ると
+  // 姿勢制御の余力が無くなる。制御側が余裕を残せているかの確認。
+  const sim = makeSim('stampfly', { wind: { enabled: false } });
+  sim.reset({ position: v3(0, 1.0, 0) });
+  sim.setMode('position');
+  sim.controller.targetPos = v3(0, 1.0, 0);
+  let maxTilt = 0;
+  for (let i = 0; i < 500 * 10; i++) {
+    sim.stepOnce(1 / 500);
+    if (i > 500) {
+      const e = qToEuler(sim.state.q);
+      maxTilt = Math.max(maxTilt, Math.abs(e.roll), Math.abs(e.pitch));
+    }
+  }
+  const err = vlen(vsub(sim.state.p, v3(0, 1.0, 0)));
+  assert.ok(err < 0.1, `位置誤差 ${err.toFixed(3)} m`);
+  assert.ok(maxTilt < 10 * DEG, `姿勢の振れ ${(maxTilt / DEG).toFixed(1)} deg`);
+  assert.ok(!sim.crashed, '墜落した');
+});
