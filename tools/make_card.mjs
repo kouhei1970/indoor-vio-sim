@@ -1,7 +1,7 @@
 /**
  * SNS 用のカード画像 (OGP / GitHub のソーシャルプレビュー) を作る。
  *
- *   node tools/make_card.mjs        → assets/social-card.png (1920x960)
+ *   node tools/make_card.mjs        → assets/social-card.png (1280x640, 1MB 以内)
  *
  * シミュレータを実際に動かして撮った 2 枚を合成する。
  *   1. 外部視点の画面 (学校の廊下でホバリングする StampFly)
@@ -12,18 +12,21 @@
  * ときは CHROMIUM_PATH でシステムの Chrome を指す。
  */
 
-import { mkdtemp, writeFile, copyFile, mkdir } from 'node:fs/promises';
+import { mkdtemp, writeFile, mkdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { startServer } from './serve.mjs';
 
 const ROOT = resolve(fileURLToPath(new URL('..', import.meta.url)));
-const OUT = join(ROOT, 'assets', 'social-card.png');
+const OUT = join(ROOT, 'assets', 'social-card.png');   // 1280x640 / 1MB 以内
 
-// カードの寸法。GitHub のソーシャルプレビューは 1280x640 推奨。
-// 1.5 倍で描いて 1920x960 にしておくと、X / Slack でも粗く見えない。
-const W = 1280, H = 640, SCALE = 1.5;
+// カードの寸法。GitHub のソーシャルプレビューは 1280x640 推奨で、
+// ファイルサイズの上限は 1MB。2 倍で描いてから 1280x640 へ縮小すると、
+// 文字と細部が滑らかなまま 1MB に収まる。
+const W = 1280, H = 640;
+const SUPERSAMPLE = 2;              // 描くときの倍率 (縮小してアンチエイリアス)
+const MAX_BYTES = 1024 * 1024;      // GitHub のソーシャルプレビュー上限
 
 // 撮影する場面 (学校 1F の廊下、機首は東向き)
 const SHOT = {
@@ -168,13 +171,40 @@ console.log('機体カメラを撮影');
 
 // --- 3. 合成 ---
 await writeFile(join(work, 'card.html'), CARD_HTML);
-const card = await browser.newPage({ viewport: { width: W, height: H }, deviceScaleFactor: SCALE });
+const card = await browser.newPage({ viewport: { width: W, height: H }, deviceScaleFactor: SUPERSAMPLE });
 await card.goto(`file://${work}/card.html`, { waitUntil: 'networkidle' });
 await card.waitForTimeout(800);
+await card.screenshot({ path: join(work, 'card@2x.png') });
+
+// --- 4. 1280x640 へ縮小して 1MB 以内に収める ---
+//
+// 2 倍で描いた絵を、等倍のページに CSS で縮めて表示し、それを撮り直す。
+// ブラウザの縮小は高品質なので、最初から等倍で描くより文字も写真もきれいに
+// 出る。canvas を使わないのは、file:// の画像で toDataURL が使えないため。
+// PNG が 1MB を超えるようなら JPEG に落とす (写真主体なので劣化は目立たない)。
+await writeFile(join(work, 'shrink.html'),
+  `<!DOCTYPE html><meta charset="utf-8">
+   <style>html,body{margin:0;padding:0;overflow:hidden;background:#0b0d10}
+   img{display:block;width:${W}px;height:${H}px}</style>
+   <img src="./card@2x.png">`);
+const shrink = await browser.newPage({ viewport: { width: W, height: H }, deviceScaleFactor: 1 });
+await shrink.goto(`file://${work}/shrink.html`, { waitUntil: 'load' });
+await shrink.waitForTimeout(500);
+
 await mkdir(join(ROOT, 'assets'), { recursive: true });
-await card.screenshot({ path: join(work, 'card.png') });
-await copyFile(join(work, 'card.png'), OUT);
-console.log(`カードを書き出しました: ${OUT}  (${W * SCALE}x${H * SCALE})`);
+let buf = await shrink.screenshot({ type: 'png' });
+let kind = 'PNG';
+if (buf.length > MAX_BYTES) {
+  for (const quality of [94, 90, 86, 80]) {
+    buf = await shrink.screenshot({ type: 'jpeg', quality });
+    kind = `JPEG q=${quality}`;
+    if (buf.length <= MAX_BYTES) break;
+  }
+}
+await writeFile(OUT, buf);
+console.log(`カードを書き出しました: ${OUT}`);
+console.log(`  ${W}x${H}  ${(buf.length / 1024).toFixed(0)} KB  ${kind}`
+  + (buf.length > MAX_BYTES ? '  ← 1MB を超えています' : '  (上限 1MB 以内)'));
 
 await browser.close();
 srv.server.close();
