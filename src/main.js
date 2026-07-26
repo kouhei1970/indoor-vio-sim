@@ -326,6 +326,96 @@ class App {
    * 実行環境が違っても同じデータセットが得られる (再現性の確保)。
    * tools/render_dataset.mjs から呼ばれる。
    */
+  /**
+   * 実機での描画コストの内訳を測る。ブラウザのコンソールから呼ぶ:
+   *
+   *     await app.profile()
+   *
+   * どの段が重いのかは GPU・解像度・環境で変わるので、
+   * 手元の環境で測った値をもとに「表示」の設定を詰める。
+   */
+  async profile(frames = 20) {
+    const gl = this.renderer.renderer;
+    const scene = this.renderer.scene;
+    const cam = this.renderer.camera;
+    const wasHeadless = this.headless;
+    this.headless = true;                       // 自動ループを止めて測定に専念する
+    await new Promise((r) => requestAnimationFrame(r));
+
+    let meshes = 0, lights = 0, shadowLights = 0;
+    scene.traverse((o) => {
+      if (o.isMesh) meshes++;
+      if (o.isLight) { lights++; if (o.castShadow) shadowLights++; }
+    });
+
+    // GPU の完了を待つ (readPixels は同期する)
+    const sync = () => {
+      gl.setRenderTarget(null);
+      const ctx = gl.getContext();
+      ctx.readPixels(0, 0, 1, 1, ctx.RGBA, ctx.UNSIGNED_BYTE, new Uint8Array(4));
+    };
+
+    const mainOnly = () => {
+      gl.shadowMap.autoUpdate = false; gl.shadowMap.needsUpdate = false;
+      gl.setRenderTarget(null); gl.render(scene, cam);
+    };
+    const mainShadow = () => {
+      gl.shadowMap.autoUpdate = false; gl.shadowMap.needsUpdate = true;
+      gl.setRenderTarget(null); gl.render(scene, cam);
+    };
+    this.renderer.sensor.camera.updateMatrixWorld(true);
+    const prevCam = this.renderer.sensor.camera.matrixWorld.clone();
+    // ブラーが効くよう、前フレーム姿勢を少しずらしたものを渡す
+    const moved = prevCam.clone();
+    moved.elements[12] += 0.05;
+    const sensorPlain = () => this.renderer.sensor.render(scene, 0, null, 1 / 30);
+    const sensorBlur = () => this.renderer.sensor.render(scene, 0, moved, 1 / 30);
+
+    // --- ウォームアップ ---
+    // シェーダのコンパイルとシャドウマップの確保は初回だけ非常に重い。
+    // 全経路を数回ずつ通してから測らないと、最初に測った段に全部乗ってしまう。
+    for (let i = 0; i < 3; i++) { mainOnly(); mainShadow(); sensorPlain(); sensorBlur(); }
+    sync();
+    await new Promise((r) => requestAnimationFrame(r));
+
+    const time = (label, fn) => {
+      const t0 = performance.now();
+      for (let i = 0; i < frames; i++) fn();
+      sync();
+      return { label, ms: (performance.now() - t0) / frames };
+    };
+
+    const rows = [];
+    rows.push(time('主描画 (影なし)', mainOnly));
+    mainOnly();
+    const tris = gl.info.render.triangles;        // 主描画 1 回ぶんの三角形数
+    rows.push(time('主描画 + 影の焼き直し', mainShadow));
+    rows.push(time('機体カメラ (ブラーなし)', sensorPlain));
+    rows.push(time('機体カメラ (ブラーあり)', sensorBlur));
+
+    this.headless = wasHeadless;
+    const c = this.renderer.sensor.intrinsics;
+    const info = {
+      環境: this.env.mode === 'building' ? `建物 ${this.env.building}` : `部屋 ${this.env.preset}`,
+      画面: `${this.renderer.width}x${this.renderer.height}`,
+      機体カメラ: `${c.width}x${c.height}`,
+      mesh: meshes, 三角形: tris, 光源: lights, 影を落とす光源: shadowLights,
+      影の更新レート: this.renderer.shadowRate, カメラ更新レート: this.renderer.sensorRate,
+      ブラー枚数: this.cameraCfg.motionBlur ? this.cameraCfg.blurSamples : 0,
+    };
+    const shadowMs = Math.max(0, rows[1].ms - rows[0].ms);
+    const perFrame = rows[0].ms
+      + shadowMs * Math.min(1, this.renderer.shadowRate / 60)
+      + rows[3].ms * Math.min(1, this.renderer.sensorRate / 60);
+
+    console.table(info);
+    console.table(rows.map((r) => ({ 段: r.label, 'ms/回': Number(r.ms.toFixed(2)) })));
+    console.log(`影の焼き直しだけのコスト: ${shadowMs.toFixed(2)} ms/回`);
+    console.log(`60fps 時の 1 フレーム見込み: ${perFrame.toFixed(2)} ms `
+      + `(${(1000 / perFrame).toFixed(0)} fps 相当)`);
+    return { info, rows, shadowMs, perFrame };
+  }
+
   headlessStep(dt) {
     this.sim.setCommand({ roll: 0, pitch: 0, yaw: 0, throttle: 0 });
     this.sim.advance(dt);

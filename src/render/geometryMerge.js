@@ -8,9 +8,13 @@
  * 影のパスは光源ごとにシーンをもう一度描くので、ドローコールを減らすと
  * 主描画と影の両方が同じ比率で軽くなる。
  *
+ * 重要: まとめた範囲がそのまま視錐台カリングの単位になる。
+ * 階ごとに 1 つへまとめてしまうと境界球が建物全体を覆い、カメラがどこを
+ * 向いていても全部描くことになって逆に遅くなる。そこで平面をセルに区切り、
+ * 「セル x マテリアル」ごとにまとめる。1 セルぶんは視界外なら省かれる。
+ *
  * 制限:
  *   - 統合後は個々のメッシュを動かせない (静的なものだけに使う)
- *   - まとめた範囲が視錐台カリングの単位になるので、建物では階ごとに分ける
  */
 
 import * as THREE from 'three';
@@ -44,18 +48,29 @@ function expand(geometry) {
  * @param {string} name 生成するメッシュの名前 (デバッグ用)
  * @returns {THREE.Mesh[]} マテリアルごとに 1 つずつのメッシュ
  */
-export function mergeByMaterial(meshes, name = 'merged') {
+export function mergeByMaterial(meshes, name = 'merged', cellSize = 0) {
   const buckets = new Map();
+  const keyOf = new Map();
   for (const m of meshes) {
     if (!m.isMesh || !m.geometry || Array.isArray(m.material)) continue;
-    let b = buckets.get(m.material);
-    if (!b) { b = []; buckets.set(m.material, b); }
+    let key = m.material;
+    if (cellSize > 0) {
+      // ワールド位置をセルに丸めて、マテリアルと組みでまとめる
+      const p = m.matrixWorld.elements;
+      const cx = Math.floor(p[12] / cellSize), cz = Math.floor(p[14] / cellSize);
+      const id = `${m.material.id}|${cx}|${cz}`;
+      key = id;
+      keyOf.set(id, m.material);
+    }
+    let b = buckets.get(key);
+    if (!b) { b = []; buckets.set(key, b); }
     b.push(m);
   }
 
   const out = [];
   let bucketIndex = 0;
-  for (const [material, group] of buckets) {
+  for (const [key, group] of buckets) {
+    const material = keyOf.get(key) || key;
     const parts = [];
     let total = 0;
     const mat3 = new THREE.Matrix3();

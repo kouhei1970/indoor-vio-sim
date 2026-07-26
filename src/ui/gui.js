@@ -465,6 +465,11 @@ export function createGui(app, container) {
   fView.add(app.state, 'viewMode', Object.fromEntries(
     Object.entries(VIEW_MODES).map(([k, v]) => [v, k])))
     .name('視点').onChange((m) => { app.renderer.viewMode = m; }).listen();
+  // 前方レンダリングでは光源をすべての画素で評価するので、描画コストは
+  // ほぼ画素数に比例する。高 DPI の画面で重いときは、まずここを下げる。
+  // 1.0 → 0.75 で画素数は約半分、コストもおよそ半分になる。
+  fView.add(app.renderer, 'maxPixelRatio', 0.5, 2, 0.25).name('描画解像度')
+    .onChange((v) => app.renderer.setMaxPixelRatio(v));
   fView.add(app.renderer, 'showPiP').name('カメラ映像を重ねる');
   fView.add(app.renderer, 'pipScale', 0.12, 0.6, 0.01).name('カメラ映像の大きさ');
   fView.add(app.renderer, 'sensorRate', 5, 120, 5).name('カメラ更新レート [Hz]');

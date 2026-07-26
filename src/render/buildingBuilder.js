@@ -90,6 +90,12 @@ export class BuildingBuilder {
     this.targets = [];
     // 統合対象の開始位置 (group.children のインデックス)
     this.staticFrom = 0;
+    // 階ごとの表示グループ
+    this.floorGroups = [];
+    // ジオメトリを統合するセルの大きさ [m] (0 で階ごとに 1 つ)
+    this.cellSize = 8;
+    // 離れた階を非表示にするか
+    this.floorCull = true;
   }
 
   /**
@@ -99,18 +105,69 @@ export class BuildingBuilder {
    */
   markStatic() { this.staticFrom = this.group.children.length; }
 
-  flushStatic(name) {
-    if (this.mergeStatic === false) { this.staticFrom = this.group.children.length; return; }
+  /**
+   * @param {string} name 生成するメッシュの名前
+   * @param {number|null} floorIndex 階に属するものはその階のグループへ入れる
+   *   (階ごとに表示を切れるようにするため)
+   */
+  flushStatic(name, floorIndex = null) {
+    const parent = floorIndex != null ? this.floorGroup(floorIndex) : this.group;
     const added = this.group.children.slice(this.staticFrom);
     this.staticFrom = this.group.children.length;
-    if (added.length < 2) return;
+    if (!added.length) return;
     this.group.updateMatrixWorld(true);
+
+    if (this.mergeStatic === false) {
+      if (parent !== this.group) {
+        for (const o of added) { this.group.remove(o); parent.add(o); }
+        this.staticFrom = this.group.children.length;
+      }
+      return;
+    }
+
     const meshes = [];
     for (const o of added) o.traverse((c) => { if (c.isMesh) meshes.push(c); });
     if (!meshes.length) return;
     for (const o of added) this.group.remove(o);
-    for (const m of mergeByMaterial(meshes, name)) this.group.add(m);
+    // セルに区切ってまとめる。まとめすぎると視錐台カリングが効かなくなり、
+    // 細かすぎるとドローコールが減らない。屋内なので 8m 角にしている。
+    for (const m of mergeByMaterial(meshes, name, this.cellSize)) parent.add(m);
     this.staticFrom = this.group.children.length;
+  }
+
+  /** 階ごとの表示グループ (表示を切れるようにする) */
+  floorGroup(i) {
+    if (!this.floorGroups[i]) {
+      const g = new THREE.Group();
+      g.name = `floor-${i}`;
+      this.floorGroups[i] = g;
+      this.group.add(g);
+      this.staticFrom = this.group.children.length;
+    }
+    return this.floorGroups[i];
+  }
+
+  /**
+   * 高さ y から見えない階を非表示にする。
+   *
+   * 階と階はスラブで仕切られているので、2 つ以上離れた階は
+   * 吹抜越しでもほぼ見えない。視錐台カリングは遮蔽を考えないため、
+   * ここで明示的に落とさないと全階を描くことになる。
+   */
+  setVisibleFloorsByHeight(y) {
+    if (!this.floorCull || !this.preset) return;
+    const floors = this.preset.floors;
+    let cur = 0;
+    for (let i = 0; i < floors.length; i++) if (floors[i].elevation <= y + 0.5) cur = i;
+    for (let i = 0; i < floors.length; i++) {
+      const g = this.floorGroups[i];
+      if (g) g.visible = Math.abs(i - cur) <= 1;
+    }
+  }
+
+  /** すべての階を表示する (俯瞰や外観を見るとき) */
+  showAllFloors() {
+    for (const g of this.floorGroups) if (g) g.visible = true;
   }
 
   clear() {
@@ -128,6 +185,7 @@ export class BuildingBuilder {
     this.floorInfo.length = 0;
     this.targets.length = 0;
     this.staticFrom = 0;
+    this.floorGroups.length = 0;
     this.world.clearObstacles();
   }
 
@@ -165,9 +223,9 @@ export class BuildingBuilder {
       for (let i = 1; i < pts.length; i++) this.routeSegments.push([pts[i - 1], pts[i]]);
     }
 
-    for (const floor of preset.floors) {
-      this.buildFloor(floor, mats, rng, env, detail);
-    }
+    preset.floors.forEach((floor, i) => {
+      this.buildFloor(floor, mats, rng, env, detail, i);
+    });
     this.markStatic();
     this.buildEquipment(preset, rng);
     this.buildTargets(preset);
@@ -181,7 +239,7 @@ export class BuildingBuilder {
 
   /* ------------------------------------------------------------ */
 
-  buildFloor(floor, mats, rng, env, detail) {
+  buildFloor(floor, mats, rng, env, detail, floorIndex = null) {
     const { outline, elevation, height } = floor;
     const slabT = floor.slabThickness ?? 0.22;
     const voids = floor.voids || [];
@@ -195,7 +253,8 @@ export class BuildingBuilder {
     slab.receiveShadow = true;
     slab.castShadow = true;
     slab.name = `slab-${floor.name}`;
-    this.group.add(slab);
+    if (floorIndex != null) this.floorGroup(floorIndex).add(slab);
+    else this.group.add(slab);
 
     // 当たり判定は矩形に分割して登録
     for (const cell of rectMinusHoles(outline, voids)) {
@@ -222,7 +281,8 @@ export class BuildingBuilder {
       ceil.name = `ceiling-${floor.name}`;
       ceil.position.y = elevation + height;
       ceil.receiveShadow = true;
-      this.group.add(ceil);
+      if (floorIndex != null) this.floorGroup(floorIndex).add(ceil);
+      else this.group.add(ceil);
       for (const cell of rectMinusHoles(outline, ceilVoids)) {
         this.addBox((cell.x0 + cell.x1) / 2, elevation + height + 0.03, (cell.z0 + cell.z1) / 2,
           (cell.x1 - cell.x0) / 2, 0.03, (cell.z1 - cell.z0) / 2, 0, 'ceiling');
@@ -233,7 +293,7 @@ export class BuildingBuilder {
     // スラブと天井は 1 枚ずつなので対象外 (天井は名前で隠せるようにも残す)。
     this.markStatic();
 
-    // --- 壁 ---
+    // --- 壁 (ここから先は階ごとにまとめる) ---
     for (const w of floor.walls) {
       this.buildWall(w, elevation, height, mats);
     }
@@ -251,7 +311,7 @@ export class BuildingBuilder {
     // --- 壁面の掲示物・マーカー (特徴点を増やす) ---
     this.decorateFloor(floor, rng, env, detail);
 
-    this.flushStatic(`floor-${floor.name}`);
+    this.flushStatic(`floor-${floor.name}`, floorIndex);
 
     this.floorInfo.push({
       name: floor.name, elevation, height,

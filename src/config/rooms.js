@@ -161,7 +161,10 @@ export const ENV_DEFAULTS = {
   lighting: 'fluorescent',
   lightIntensity: 1.0,
   shadows: true,
-  shadowQuality: 2048,
+  // シャドウマップ 1 枚あたりの解像度。影を落とす光源は最大 4 灯なので、
+  // 2048 では 1 回の焼き直しで 4x2048x2048 = 1600 万画素ぶんの深度を描く。
+  // 1024 なら 1/4 で済み、屋内の影ではほとんど差が分からない。
+  shadowQuality: 1024,
   seed: 7,
   showTrajectory: true,
   showColliders: false,

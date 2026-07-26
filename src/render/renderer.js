@@ -34,7 +34,12 @@ export class SceneRenderer {
       powerPreference: 'high-performance',
       preserveDrawingBuffer: true,
     });
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+    // 描画解像度。前方レンダリングでは光源をすべての画素で評価するので、
+    // 画素数がそのまま描画コストになる。高 DPI の画面では devicePixelRatio が
+    // 2 になり、画素数は 4 倍 = コストも約 4 倍。既定では 1.5 で頭打ちにして、
+    // 足りなければ GUI の「描画解像度」で上げてもらう。
+    this.maxPixelRatio = 1.5;
+    this.renderer.setPixelRatio(this.pixelRatio());
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = THREE.PCFShadowMap;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
@@ -325,6 +330,18 @@ export class SceneRenderer {
     }
   }
 
+  /** 実際に使う画素比 (画面の DPI と上限のうち小さいほう) */
+  pixelRatio() {
+    return Math.min(window.devicePixelRatio || 1, this.maxPixelRatio);
+  }
+
+  /** 描画解像度の上限を変える (GUI から) */
+  setMaxPixelRatio(v) {
+    this.maxPixelRatio = v;
+    this.renderer.setPixelRatio(this.pixelRatio());
+    this.setSize(this.width, this.height);
+  }
+
   setSize(width, height) {
     this.renderer.setSize(width, height, false);
     this.camera.aspect = width / height;
@@ -362,7 +379,34 @@ export class SceneRenderer {
     const onboardFull = this.viewMode === 'onboard';
     const needSensor = this.showPiP || onboardFull || opts.forceOnboard;
 
-    // --- メイン描画 (先に描いてシャドウマップを確定させる) ---
+    // 建物では、離れた階を描かないようにする。
+    // 視錐台カリングは遮蔽を考えないので、スラブで隠れている上下階も
+    // 「視界に入っている」扱いで描かれてしまう。ここで明示的に落とす。
+    // 外部視点と機体カメラでは高さが違うので、描く直前にそれぞれ設定する。
+    const building = this.activeBuilder === this.buildingBuilder ? this.buildingBuilder : null;
+    const floorsFor = (y) => { if (building) building.setVisibleFloorsByHeight(y); };
+    // 俯瞰では建物を上から見るので全階を出す
+    const floorsAll = () => { if (building) building.showAllFloors(); };
+
+    // --- シャドウマップの焼き直し ---
+    // 影は隠している階からも落ちてほしい (階段の吹抜など) ので、焼くときだけ
+    // 全階を出す。ただし three.js は render() の中で影を焼くため、そのまま
+    // 本描画まで全階を描いてしまう。極小の領域に 1 回描いて影だけ確定させ、
+    // 本描画は階カリングを効かせた状態で行う。
+    if (updateShadow) {
+      floorsAll();
+      this.renderer.setRenderTarget(null);
+      this.renderer.setScissor(0, 0, 2, 2);
+      this.renderer.setScissorTest(true);
+      this.renderer.setViewport(0, 0, 2, 2);
+      this.renderer.render(this.scene, this.camera);
+      this.renderer.setScissorTest(false);
+      this.renderer.shadowMap.needsUpdate = false;
+    }
+
+    // --- メイン描画 ---
+    if (this.viewMode === 'top') floorsAll();
+    else floorsFor(this.camera.position.y);
     this.renderer.setRenderTarget(null);
     this.renderer.setViewport(0, 0, this.width, this.height);
     this.renderer.setScissorTest(false);
@@ -385,6 +429,7 @@ export class SceneRenderer {
     const sensorPeriod = 1 / Math.max(1, this.sensorRate);
     if (needSensor && (this.sensorAccum >= sensorPeriod || opts.forceOnboard || !this.hasPrevCam)) {
       this.sensorAccum = 0;
+      floorsFor(state.p.y);          // 機体のいる階を基準にする
       this.sensor.camera.updateMatrixWorld(true);
       const prev = this.hasPrevCam ? this.prevCamMatrix.clone() : null;
       this.sensor.render(this.scene, time, prev, Math.max(dt, sensorPeriod));
