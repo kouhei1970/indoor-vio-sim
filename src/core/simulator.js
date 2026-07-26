@@ -80,6 +80,11 @@ export class Simulator {
     this.perf = performanceSummary(v, this.massProps, this.air);
     this.thrusts = new Array(this.rotors.length).fill(0);
     this.torquesQ = new Array(this.rotors.length).fill(0);
+    // ロータ数が変わる差し替え (クアッド → ヘキサなど) では、前の機体の
+    // 推力指令が残っているとモータ数と長さが合わず undefined を読んで NaN になる。
+    // 制御則は controlRate ごとにしか走らないので、差し替え直後の数ステップは
+    // ここで用意した配列がそのまま使われる。
+    this.thrustCmd = new Array(this.rotors.length).fill(0);
   }
 
   reset(pose = null) {
@@ -100,6 +105,10 @@ export class Simulator {
     this.armed = true;
     this.controlAccum = 0;
     this.lastU = [0, 0, 0, 0];
+    this.thrustCmd = new Array(this.rotors.length).fill(0);
+    this.thrusts = new Array(this.rotors.length).fill(0);
+    this.torquesQ = new Array(this.rotors.length).fill(0);
+    this.lastTarget = null;
   }
 
   setVehicle(vehicle) {

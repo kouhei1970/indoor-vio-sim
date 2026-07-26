@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { v3, vlen, vsub, qToEuler, DEG } from '../src/core/math.js';
 import { resolveLayout, computeMassProperties, rotorCoefficients, performanceSummary, LAYOUTS } from '../src/core/airframe.js';
 import { Mixer } from '../src/core/mixer.js';
-import { buildVehicle, SIM_DEFAULTS, PRESET_KEYS, deepMerge } from '../src/config/vehicle.js';
+import { buildVehicle, SIM_DEFAULTS, PRESET_KEYS, deepMerge, clone } from '../src/config/vehicle.js';
 import { Simulator } from '../src/core/simulator.js';
 import { CollisionWorld } from '../src/core/collision.js';
 import { AIR_PRESETS, groundEffectFactor, ceilingEffectFactor } from '../src/core/aero.js';
@@ -368,4 +368,58 @@ test('StampFly: 推力重量比が低くても位置保持できる', () => {
   assert.ok(err < 0.1, `位置誤差 ${err.toFixed(3)} m`);
   assert.ok(maxTilt < 10 * DEG, `姿勢の振れ ${(maxTilt / DEG).toFixed(1)} deg`);
   assert.ok(!sim.crashed, '墜落した');
+});
+
+/* ------------------------------------------------------------------ */
+/* 機体の差し替え                                                       */
+/* ------------------------------------------------------------------ */
+
+test('ロータ数の違う機体へ差し替えても発散しない', () => {
+  // GUI でプリセットを切り替えたときと同じ流れ。
+  // 差し替え前の推力指令が残っているとモータ数と長さが合わず、
+  // 制御則が次に走るまでの数ステップで NaN になる。
+  const world = new CollisionWorld();
+  world.setRoom(20, 6, 20);
+
+  for (const from of PRESET_KEYS) {
+    for (const to of PRESET_KEYS) {
+      const sim = new Simulator(buildVehicle(from), clone(SIM_DEFAULTS), world);
+      sim.setMode('position');
+      sim.controller.targetPos = { x: 0, y: 1.0, z: 0 };
+      for (let i = 0; i < 200; i++) sim.stepOnce(1 / 500);
+
+      sim.setVehicle(buildVehicle(to));
+      assert.equal(sim.thrustCmd.length, sim.rotors.length,
+        `${from} → ${to}: 推力指令の長さ ${sim.thrustCmd.length} がロータ数 ${sim.rotors.length} と違う`);
+
+      sim.reset({ position: v3(0, 1.0, 0), yaw: 0 });
+      sim.setMode('position');
+      sim.controller.targetPos = { x: 0, y: 1.0, z: 0 };
+      // 制御則が走る前 (controlRate 未満) のステップを必ず含める
+      for (let i = 0; i < 500; i++) {
+        sim.stepOnce(1 / 500);
+        assert.ok(Number.isFinite(sim.state.p.x) && Number.isFinite(sim.state.p.y)
+          && Number.isFinite(sim.state.p.z),
+        `${from} → ${to}: step ${i} で発散した`);
+      }
+    }
+  }
+});
+
+test('機体を差し替えても前の機体の状態が残らない', () => {
+  const world = new CollisionWorld();
+  world.setRoom(20, 6, 20);
+  const sim = new Simulator(buildVehicle('tricopter'), clone(SIM_DEFAULTS), world);
+  sim.setMode('position');
+  sim.controller.targetPos = { x: 0, y: 1.2, z: 0 };
+  for (let i = 0; i < 1000; i++) sim.stepOnce(1 / 500);
+  assert.ok(sim.thrusts.some((t) => t > 0), '飛んでいる状態を作れている');
+
+  sim.setVehicle(buildVehicle('x8-heavy'));
+  sim.reset();
+  for (const arr of [sim.thrustCmd, sim.thrusts, sim.torquesQ]) {
+    assert.equal(arr.length, sim.rotors.length);
+    assert.ok(arr.every((x) => x === 0), 'リセット後は 0 から始まる');
+  }
+  assert.equal(sim.lastTarget, null, '前の機体の軌道目標が残らない');
 });
