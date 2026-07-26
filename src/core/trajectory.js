@@ -269,7 +269,22 @@ export class Trajectory {
     };
   }
 
+  /**
+   * パターンの点列を作る。
+   *
+   * 周回 (loop = true) では、終点から始点へ戻る区間も経路に含める。
+   * 閉じていないと、時刻が一周した瞬間に位置が飛ぶ。
+   * 往復スキャンのように復路を明示的に作るパターンは、そちらで閉じている。
+   */
   generatePoints() {
+    const pts = this.generateRaw();
+    if (!this.cfg.loop || pts.length < 2) return pts;
+    const a = pts[0], b = pts[pts.length - 1];
+    if (vlen(vsub(b, a)) > 1e-3) pts.push(v3(a.x, a.y, a.z));
+    return pts;
+  }
+
+  generateRaw() {
     const c = this.cfg;
     const s = this.safeBounds();
     const alt = clamp(c.altitude, s.minY, s.maxY);
@@ -282,12 +297,32 @@ export class Trajectory {
         return c.smooth ? resample(catmullRomLoop(wps, c.loop), c.resolution) : wps;
       }
       case 'lawnmower': {
+        // 往復スキャン。行を折り返しながら端から端まで舐める。
         const rows = Math.max(2, Math.round(c.rows));
         for (let i = 0; i < rows; i++) {
           const z = lerp(s.minZ, s.maxZ, rows === 1 ? 0.5 : i / (rows - 1));
           const x0 = i % 2 === 0 ? s.minX : s.maxX;
           const x1 = i % 2 === 0 ? s.maxX : s.minX;
           pts.push(v3(x0, alt, z), v3(x1, alt, z));
+        }
+        // --- 復路 (周回コース) ---
+        //
+        // loop = false のときは時間を折り返して同じ経路を逆にたどるため、
+        // 機首は行きの向きのままで「後ろ向きに飛ぶ」ことになる。
+        // そこで最後に始点へ戻る復路を継ぎ足して 1 本の周回コースにする。
+        // 走査域の外側 (安全範囲の縁) を回るので、行のカバー範囲は変わらない。
+        if (c.loop) {
+          const first = pts[0];
+          const last = pts[pts.length - 1];
+          // 走査域の外側へ出る量。安全範囲の内側に収まる範囲で取る。
+          const outZ = Math.min(c.returnOffset ?? 1.2, Math.max(0, (s.maxZ - s.minZ) * 0.25));
+          const zBack = clamp(last.z + (last.z >= first.z ? outZ : -outZ), s.minZ, s.maxZ);
+          const zHome = clamp(first.z + (first.z <= last.z ? -outZ : outZ), s.minZ, s.maxZ);
+          // 最終行の端 → 外へ出る → 始点側の x へ戻る → 始点の手前へ
+          pts.push(v3(last.x, alt, zBack));
+          pts.push(v3(first.x, alt, zBack));
+          pts.push(v3(first.x, alt, zHome));
+          pts.push(v3(first.x, alt, first.z));      // 周回を閉じる
         }
         return resample(pts, c.resolution);
       }
@@ -579,12 +614,14 @@ export const TRAJECTORY_DEFAULTS = {
   // 角を丸める最大半径 [m]。大きいほど曲率が緩み、速度を落とさずに回れる。
   cornerRadius: 1.2,
   rows: 5,
+  // 往復スキャンの復路が走査域の外側へ出る量 [m] (loop = true のとき)
+  returnOffset: 1.2,
   turns: 2,
   radius: 1.5,
   climb: 0.8,
   resolution: 0.3,
   smooth: true,
-  loop: false,
+  loop: true,
   yaw: 0,
   yawRate: 0.35,
   route: 'patrol',
