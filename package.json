@@ -1,0 +1,23 @@
+{
+  "name": "realmulticoptersimulator",
+  "version": "1.0.0",
+  "description": "屋内ドローン用フライトシミュレータ — フォトリアルな画像からの自己位置推定研究向け",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "start": "node tools/serve.mjs",
+    "serve": "node tools/serve.mjs",
+    "test": "node --test tests/",
+    "dataset": "node tools/render_dataset.mjs",
+    "smoke": "node tools/smoke.mjs"
+  },
+  "keywords": [
+    "drone", "multicopter", "simulator", "indoor", "visual-localization",
+    "vio", "slam", "dataset", "three.js"
+  ],
+  "license": "MIT",
+  "devDependencies": {},
+  "optionalDependencies": {
+    "playwright": "^1.49.0"
+  }
+}
