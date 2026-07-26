@@ -426,6 +426,11 @@ export function createGui(app, container) {
       ? app.input.padRaw.map((v) => v.toFixed(2)).join(' ') : '—';
   }, 200);
 
+  // 障害物を避けて軌道を引き直すか (core/pathPlanner.js)。
+  // 切ると素の幾何パターンのままになる (家具を突き抜ける)。
+  fFlight.add(app.sim.trajectory.cfg, 'avoidObstacles').name('障害物を避ける (経路計画)')
+    .onChange(() => app.applyTrajectory());
+
   const fTraj = fFlight.addFolder('自動飛行の軌道');
   const patternLabels = {
     hover: 'ホバリング', waypoints: 'ウェイポイント', lawnmower: '往復スキャン',

@@ -151,18 +151,26 @@ try {
       });
     }
     // --- 目標軌跡が障害物を通らないか ---
-    // 家具・設備の中を通る軌道を出すと、追従した機体がぶつかり続ける。
+    // 判定は「実際の当たり判定の箱を機体半径ぶん膨らませたもの」に対して、
+    // 点だけでなく区間の途中まで見る (占有格子は計画用の近似なので使わない)。
     out.trajectory = [];
-    const STRUCTURAL = new Set(['wall', 'slab', 'ceiling']);
-    const insideCount = (pts) => {
+    const R = 0.15;                       // 機体半径 [m]
+    const hitBox = (p) => a.world.boxes.some((b) => {
+      const dx = p.x - b.center.x, dz = p.z - b.center.z;
+      const lx = dx * b.cos + dz * b.sin, lz = -dx * b.sin + dz * b.cos;
+      return Math.abs(lx) < b.half.x + R && Math.abs(lz) < b.half.z + R
+        && Math.abs(p.y - b.center.y) < b.half.y + R;
+    });
+    const badSegments = (pts) => {
       let n = 0;
-      for (const p of pts) {
-        for (const b of a.world.boxes) {
-          if (STRUCTURAL.has(b.name)) continue;
-          const dx = p.x - b.center.x, dz = p.z - b.center.z;
-          const lx = dx * b.cos + dz * b.sin, lz = -dx * b.sin + dz * b.cos;
-          if (Math.abs(lx) < b.half.x + 0.2 && Math.abs(lz) < b.half.z + 0.2
-              && p.y < b.center.y + b.half.y + 0.2 && p.y > b.center.y - b.half.y - 0.2) { n++; break; }
+      for (let i = 0; i + 1 < pts.length; i++) {
+        const A = pts[i], B = pts[i + 1];
+        const L = Math.hypot(B.x - A.x, B.y - A.y, B.z - A.z);
+        const m = Math.max(1, Math.ceil(L / 0.05));
+        for (let k = 0; k <= m; k++) {
+          const t = k / m;
+          if (hitBox({ x: A.x + (B.x - A.x) * t, y: A.y + (B.y - A.y) * t,
+            z: A.z + (B.z - A.z) * t })) { n++; break; }
         }
       }
       return n;
@@ -178,7 +186,8 @@ try {
       for (const pattern of ['lawnmower', 'perimeter']) {
         a.sim.trajectory.cfg.pattern = pattern;
         a.applyTrajectory();
-        out.trajectory.push({ key: `${key}/${pattern}`, hits: insideCount(a.sim.trajectory.polyline()) });
+        out.trajectory.push({ key: `${key}/${pattern}`,
+          hits: badSegments(a.sim.trajectory.polyline()) });
       }
     }
 
