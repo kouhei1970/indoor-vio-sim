@@ -349,19 +349,102 @@ export function stringPull(grid, path) {
   return out;
 }
 
+/** これ以上曲がる頂点は「別の角」とみなし、丸めの範囲をそこで止める */
+const SIGNIFICANT_TURN = (25 * Math.PI) / 180;
+
 /**
  * 角を丸める。
  *
- * 折れ線のままだと機体が各点で止まりかけるので、コーナーを二次ベジェで
+ * 折れ線のままだと機体が各点で止まりかけるので、コーナーをベジェ曲線で
  * 丸める。丸め半径を大きいほうから試し、**衝突判定に通ったものだけ**
  * 採用するので、平滑化によって障害物に触れることはない。
  *
+ * 丸める範囲は「隣の頂点まで」ではなく**経路に沿った弧長**で取る。
+ * 迂回した所では string pulling の後でも頂点が 0.1〜0.3 m 間隔で並ぶ。
+ * 隣の頂点までで制限すると丸め半径が 1〜6 cm まで潰れ、そこを曲がるのに
+ * 必要な向心加速度 v²/r が上限を超えるため、速度プロファイルが
+ * 0.13〜0.24 m/s まで落ちる (実測: 学校・事務所ビル・公民館)。
+ * 途中の頂点の曲がりが小さければ、それらをまたいで 1 つのなだらかな角に
+ * まとめる。曲がりの大きい頂点 (別の角) は越えない。
+ *
+ * 曲線は始点・終点で経路の接線に一致する三次ベジェ (G1 エルミート) を使う。
+ * 二次ベジェで複数の頂点をまたぐと、制御点に選んだ頂点へ引っ張られて
+ * 経路が飛び出す (往復スキャンの復路で実際に発生した)。接線を合わせれば
+ * 前後の区間と滑らかにつながり、始点と終点を結ぶ範囲から外れない。
+ *
  * @param {number} radius 最大の丸め半径 [m]
  */
-export function roundCorners(grid, path, radius = 0.8, samples = 8) {
+export function roundCorners(grid, path, radius = 0.8, samples = 8, tolerance = 0.35) {
   if (!path || path.length <= 2) return path || [];
+  const n = path.length;
+
+  // 累積弧長と、各頂点の曲がり角
+  const seg = new Array(n - 1);
+  const s = new Array(n);
+  s[0] = 0;
+  for (let i = 0; i + 1 < n; i++) {
+    seg[i] = vlen(vsub(path[i + 1], path[i]));
+    s[i + 1] = s[i] + seg[i];
+  }
+  const total = s[n - 1];
+  const turn = new Array(n).fill(0);
+  for (let i = 1; i + 1 < n; i++) {
+    const a = vsub(path[i], path[i - 1]), b = vsub(path[i + 1], path[i]);
+    const la = vlen(a), lb = vlen(b);
+    if (la < 1e-9 || lb < 1e-9) continue;
+    const c = (a.x * b.x + a.y * b.y + a.z * b.z) / (la * lb);
+    turn[i] = Math.acos(clamp(c, -1, 1));
+  }
+
+  /** 弧長 u [m] を含む区間の番号 */
+  const segAt = (u) => {
+    let i = 0;
+    while (i + 2 < n && s[i + 1] <= u) i++;
+    return i;
+  };
+  /** 弧長 u の位置の点 */
+  const at = (u) => {
+    const t = clamp(u, 0, total);
+    const i = segAt(t);
+    const f = seg[i] > 1e-9 ? (t - s[i]) / seg[i] : 0;
+    return v3(path[i].x + (path[i + 1].x - path[i].x) * f,
+      path[i].y + (path[i + 1].y - path[i].y) * f,
+      path[i].z + (path[i + 1].z - path[i].z) * f);
+  };
+  /** 弧長 u の位置での進行方向 (単位ベクトル) */
+  const dirAt = (u) => {
+    const i = segAt(clamp(u, 0, total));
+    const d = vsub(path[i + 1], path[i]);
+    const l = vlen(d);
+    return l > 1e-9 ? vmul(d, 1 / l) : v3(1, 0, 0);
+  };
+  /** 点 p と線分 ab の距離 */
+  const segDist = (p, a, b) => {
+    const dx = b.x - a.x, dy = b.y - a.y, dz = b.z - a.z;
+    const l2 = dx * dx + dy * dy + dz * dz;
+    let t = l2 > 1e-18 ? ((p.x - a.x) * dx + (p.y - a.y) * dy + (p.z - a.z) * dz) / l2 : 0;
+    t = clamp(t, 0, 1);
+    return Math.hypot(p.x - a.x - dx * t, p.y - a.y - dy * t, p.z - a.z - dz * t);
+  };
+  /** 丸めた曲線が、置き換えた元の折れ線からどれだけ離れるか [m] */
+  const deviation = (arc, u0, u2) => {
+    const i0 = segAt(u0), i2 = segAt(Math.max(u0, u2 - 1e-9));
+    let worst = 0;
+    for (const q of arc) {
+      let best = Infinity;
+      for (let k = i0; k <= i2; k++) best = Math.min(best, segDist(q, path[k], path[k + 1]));
+      if (best > worst) worst = best;
+    }
+    return worst;
+  };
+
   const out = [path[0]];
 
+  //
+  // 直前とほぼ同じ位置の点は落とす。角と角が隣り合うと、前の角の終わりと
+  // 次の角の始まりが同じ点になる。1mm 未満の区間が残ると、そこの曲率が
+  // 見かけ上いくらでも大きくなり、速度プロファイルが不必要に落ちる。
+  const MIN_STEP = 1e-3;
   /**
    * 直前の点から順に見通しを確認しながら継ぎ足す。
    * 1 区間でも通らなければ何も足さずに false を返すので、
@@ -369,41 +452,55 @@ export function roundCorners(grid, path, radius = 0.8, samples = 8) {
    */
   const tryAppend = (pts) => {
     let prev = out[out.length - 1];
+    const keep = [];
     for (const q of pts) {
       if (!grid.lineOfSight(prev, q)) return false;
-      prev = q;
+      if (vlen(vsub(q, prev)) >= MIN_STEP) { keep.push(q); prev = q; }
     }
-    out.push(...pts);
+    out.push(...keep);
     return true;
   };
 
-  for (let i = 1; i < path.length - 1; i++) {
-    const prev = path[i - 1], cur = path[i], next = path[i + 1];
-    const dA = vsub(prev, cur), dB = vsub(next, cur);
-    const lA = vlen(dA), lB = vlen(dB);
+  // すでに丸めに使った弧長。次の角はここより手前へは戻れない
+  let used = 0;
+  for (let i = 1; i < n - 1; i++) {
     let done = false;
-    if (lA > 1e-6 && lB > 1e-6) {
-      for (const r of [radius, radius * 0.5, radius * 0.25]) {
-        const rr = Math.min(r, lA * 0.45, lB * 0.45);
-        if (rr < 0.05) continue;
-        const p0 = vadd(cur, vmul(dA, rr / lA));
-        const p2 = vadd(cur, vmul(dB, rr / lB));
+    if (turn[i] > 1e-4) {
+      for (const f of [1, 0.6, 0.35, 0.2, 0.1]) {
+        const r = radius * f;
+        const u0 = Math.max(used, s[i] - r), u2 = Math.min(total, s[i] + r);
+        if (s[i] - u0 < 0.02 || u2 - s[i] < 0.02) continue;
+        const p0 = at(u0), p2 = at(u2);
+        const d0 = dirAt(u0), d2 = dirAt(u2 - 1e-6);
+        // 三次ベジェ (始点・終点で接線が経路と一致する)
+        const k = vlen(vsub(p2, p0)) / 3;
+        const b1 = vadd(p0, vmul(d0, k)), b2 = vsub(p2, vmul(d2, k));
+        const m = Math.min(24, Math.max(samples, Math.ceil((u2 - u0) / 0.15)));
         const arc = [];
-        for (let sIdx = 0; sIdx <= samples; sIdx++) {
-          const t = sIdx / samples;
-          const u = 1 - t;
-          // 二次ベジェ p0 → cur → p2
-          arc.push(v3(u * u * p0.x + 2 * u * t * cur.x + t * t * p2.x,
-            u * u * p0.y + 2 * u * t * cur.y + t * t * p2.y,
-            u * u * p0.z + 2 * u * t * cur.z + t * t * p2.z));
+        for (let sIdx = 1; sIdx <= m; sIdx++) {
+          const t = sIdx / m, u = 1 - t;
+          const c0 = u * u * u, c1 = 3 * u * u * t, c2 = 3 * u * t * t, c3 = t * t * t;
+          arc.push(v3(c0 * p0.x + c1 * b1.x + c2 * b2.x + c3 * p2.x,
+            c0 * p0.y + c1 * b1.y + c2 * b2.y + c3 * p2.y,
+            c0 * p0.z + c1 * b1.z + c2 * b2.z + c3 * p2.z));
         }
-        if (tryAppend(arc)) { done = true; break; }
+        // 元の経路から離れすぎる丸めは採らない。離れても衝突はしない
+        // (見通しは確認する) が、往復スキャンの行が短くなるなど、
+        // パターンそのものが変わってしまう。
+        if (deviation(arc, u0, u2) > tolerance) continue;
+        if (tryAppend([p0, ...arc])) {
+          done = true;
+          used = u2;
+          // 丸めに飲み込んだ頂点は読み飛ばす
+          while (i + 1 < n - 1 && s[i + 1] <= u2) i++;
+          break;
+        }
       }
     }
     // 丸められない角はそのまま残す (安全側)
-    if (!done && !tryAppend([cur])) out.push(cur);
+    if (!done && !tryAppend([path[i]])) { out.push(path[i]); used = s[i]; }
   }
-  if (!tryAppend([path[path.length - 1]])) out.push(path[path.length - 1]);
+  if (!tryAppend([path[n - 1]])) out.push(path[n - 1]);
   return out;
 }
 
@@ -461,7 +558,7 @@ export function planThrough(grid, waypoints, opts = {}) {
     } else { safe.push(b); failed++; }
   }
 
-  const points = roundCorners(grid, safe, opts.corner ?? 0.8);
+  const points = roundCorners(grid, safe, opts.corner ?? 0.8, 8, opts.tolerance);
   // 自己検証 (開発用): 出力の全区間が本当に通れるか
   let badSafe = 0, badFinal = 0;
   for (let i = 0; i + 1 < safe.length; i++) if (!grid.lineOfSight(safe[i], safe[i + 1])) badSafe++;

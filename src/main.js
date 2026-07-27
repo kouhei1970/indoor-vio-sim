@@ -173,6 +173,14 @@ class App {
         this.notify(`一周 ${lap.toFixed(0)} 秒に対しホバリング時間 ${hover.toFixed(0)} 秒 — `
           + '途中でバッテリーが切れます (速度を上げるか、機体・電池を変えてください)');
       }
+      // 目標の速度が機体の水平速度の上限を超えていないか。超えていると
+      // 目標だけ先へ進んでしまい、機体は追いつけないまま壁や家具に当たる。
+      const vTraj = this.sim.trajectory.cfg.speed ?? 0;
+      const vMax = this.sim.vehicle.controller?.maxSpeedXY ?? 0;
+      if (vMax > 0 && vTraj > vMax) {
+        this.notify(`目標の速度 ${vTraj.toFixed(1)} m/s が機体の上限 ${vMax.toFixed(1)} m/s を超えています`
+          + ' — 目標に追いつけません (「軌道 → 速度」を下げるか、機体の「制御 → 最大水平速度」を上げてください)');
+      }
     }
   }
 

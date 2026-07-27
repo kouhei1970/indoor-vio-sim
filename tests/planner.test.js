@@ -111,6 +111,59 @@ test('角の丸め: 出力の全区間が通れる', () => {
   }
 });
 
+test('角の丸め: 短い区間が続く所でも半径が潰れない', () => {
+  // A* の迂回では 0.1〜0.3m 間隔の頂点が並ぶ。隣の頂点までで丸め半径を
+  // 制限すると 1〜6cm の角になり、そこを曲がるのに要る向心加速度 v²/r が
+  // 上限を超えて、速度プロファイルが 0.2 m/s 以下まで落ちてしまう。
+  const g = new OccupancyGrid(ROOM, [], { res: 0.2, clearance: 0.2 });
+  // 0.25m 刻みでゆるく曲がる折れ線 (迂回路を模したもの)
+  const path = [];
+  for (let i = 0; i <= 12; i++) {
+    const t = i * 0.25;
+    path.push({ x: -2 + t, y: 1.5, z: (i % 2 ? 0.06 : -0.06) + t * 0.2 });
+  }
+  const out = roundCorners(g, path, 1.2);
+  // 出力の曲率半径 = 隣り合う 3 点を通る円の半径
+  let minR = Infinity;
+  for (let i = 1; i + 1 < out.length; i++) {
+    const a = out[i - 1], b = out[i], c = out[i + 1];
+    const ab = Math.hypot(b.x - a.x, b.y - a.y, b.z - a.z);
+    const bc = Math.hypot(c.x - b.x, c.y - b.y, c.z - b.z);
+    const ac = Math.hypot(c.x - a.x, c.y - a.y, c.z - a.z);
+    if (ab < 1e-6 || bc < 1e-6 || ac < 1e-6) continue;
+    const ux = b.x - a.x, uy = b.y - a.y, uz = b.z - a.z;
+    const wx = c.x - a.x, wy = c.y - a.y, wz = c.z - a.z;
+    const area2 = Math.hypot(uy * wz - uz * wy, uz * wx - ux * wz, ux * wy - uy * wx);
+    if (area2 < 1e-12) continue;                      // まっすぐな所
+    minR = Math.min(minR, (ab * bc * ac) / area2);
+  }
+  // 横加速度 1.5 m/s²・速度 0.6 m/s で回れる半径は 0.24m。それを下回らないこと
+  assert.ok(minR > 0.24, `丸め半径が潰れている (最小 ${minR.toFixed(3)} m)`);
+  for (let i = 0; i + 1 < out.length; i++) {
+    assert.equal(g.lineOfSight(out[i], out[i + 1]), true, `区間 ${i} が通らない`);
+  }
+});
+
+test('角の丸め: 元の経路から離れすぎない', () => {
+  // 離れても衝突はしない (見通しは確認する) が、離れすぎると往復スキャンの
+  // 行が短くなるなど、走査パターンそのものが変わってしまう。
+  const g = new OccupancyGrid(ROOM, [], { res: 0.2, clearance: 0.2 });
+  const path = [{ x: -3, y: 1.5, z: -3 }, { x: -3, y: 1.5, z: 3 }, { x: 3, y: 1.5, z: 3 }];
+  const out = roundCorners(g, path, 1.2, 8, 0.35);
+  const segDist = (p, a, b) => {
+    const dx = b.x - a.x, dy = b.y - a.y, dz = b.z - a.z;
+    const l2 = dx * dx + dy * dy + dz * dz;
+    const t = Math.max(0, Math.min(1, l2 > 1e-18
+      ? ((p.x - a.x) * dx + (p.y - a.y) * dy + (p.z - a.z) * dz) / l2 : 0));
+    return Math.hypot(p.x - a.x - dx * t, p.y - a.y - dy * t, p.z - a.z - dz * t);
+  };
+  for (const q of out) {
+    let best = Infinity;
+    for (let i = 0; i + 1 < path.length; i++) best = Math.min(best, segDist(q, path[i], path[i + 1]));
+    assert.ok(best <= 0.35 + 1e-9, `元の経路から ${best.toFixed(3)} m 離れている`);
+  }
+});
+
 test('planThrough: 障害物を避け、全区間が通れる', () => {
   const boxes = [
     box(0, 1.0, 0, 0.6, 1.0, 0.6),
